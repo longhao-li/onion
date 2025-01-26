@@ -5,6 +5,17 @@
 #include <atomic>
 #include <thread>
 
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+#    ifndef WIN32_LEAN_AND_MEAN
+#        define WIN32_LEAN_AND_MEAN
+#    endif
+#    ifndef NOMINMAX
+#        define NOMINMAX
+#    endif
+#    include <WinSock2.h>
+#    include <Windows.h>
+#endif
+
 using namespace onion;
 using namespace onion::detail;
 
@@ -466,4 +477,287 @@ auto SchedulerTaskQueue::advanceStealIndex(std::size_t current) noexcept -> bool
     }
 
     return m_thiefIndex.load(std::memory_order_relaxed) != current;
+}
+
+/// \brief
+///   Worker for each thread.
+static thread_local SchedulerWorker *ThreadWorker;
+
+/// \brief
+///   Try to bind current thread to the specified CPU core. This method does nothing if failed to
+///   bind current thread to CPU thread.
+/// \param id
+///   ID of the CPU core to be bound. This will be wrapped around if \p id is greater than number of
+///   processor cores.
+static auto bindThreadToCpuCore(std::size_t id) noexcept -> void {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Query number of CPU cores.
+    SYSTEM_INFO info;
+    GetSystemInfo(&info);
+    if (info.dwNumberOfProcessors == 0) [[unlikely]]
+        return;
+
+    constexpr std::size_t maskSize = sizeof(DWORD_PTR) * 8;
+    if (info.dwNumberOfProcessors > maskSize)
+        info.dwNumberOfProcessors = maskSize;
+
+    id %= info.dwNumberOfProcessors;
+    SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD>(1 << id));
+#endif
+}
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
+    : m_isRunning{},
+      m_shouldStop{},
+      m_scheduler{&scheduler},
+      m_index{index},
+      m_random{std::random_device{}()},
+      m_iocp{CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1)},
+      m_frequency{},
+      m_timeouts{},
+      m_taskQueue{16384},
+      m_localTasks{} {
+    if (m_iocp == nullptr) [[unlikely]]
+        throw std::system_error(GetLastError(), std::system_category(), "Failed to create IOCP");
+
+    // Get frequency of the performance counter per millisecond.
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    m_frequency = freq.QuadPart / 1000;
+}
+#endif
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
+    : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
+      m_shouldStop{other.m_shouldStop.load(std::memory_order_relaxed)},
+      m_random{std::move(other.m_random)},
+      m_iocp{other.m_iocp},
+      m_frequency{other.m_frequency},
+      m_timeouts{std::move(other.m_timeouts)},
+      m_taskQueue{std::move(other.m_taskQueue)},
+      m_localTasks{std::move(other.m_localTasks)} {
+    other.m_iocp = nullptr;
+}
+#endif
+
+SchedulerWorker::~SchedulerWorker() noexcept {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    if (m_iocp != nullptr)
+        CloseHandle(m_iocp);
+#endif
+}
+
+auto SchedulerWorker::start() noexcept -> void {
+    // This method could only be called once at the same time.
+    if (m_isRunning.exchange(true, std::memory_order_relaxed)) [[unlikely]]
+        std::terminate();
+
+    // Clear stop flag.
+    m_shouldStop.store(false, std::memory_order_relaxed);
+
+    // Set thread worker.
+    ThreadWorker = this;
+
+    // Execute a task.
+    const auto runTask = [](PromiseBase *promise) noexcept -> void {
+        std::coroutine_handle<> stack = promise->stackBottom();
+        promise->coroutine().resume();
+        if (stack.done())
+            stack.destroy();
+    };
+
+    // Steal works from another worker and execute.
+    const auto stealTasks = [this, runTask]() noexcept -> void {
+        auto workers = m_scheduler->workers();
+
+        // Do not steal tasks if there is only one worker.
+        if (workers.size() == 1)
+            return;
+
+        auto distribution = std::uniform_int_distribution<std::size_t>(0, workers.size() - 2);
+        auto index        = distribution(m_random);
+
+        // Avoid stealing from itself.
+        if (index >= m_index)
+            index += 1;
+
+        SchedulerWorker &worker = workers[index];
+        PromiseBase *promise    = worker.m_taskQueue.trySteal();
+        while (promise != nullptr) {
+            runTask(promise);
+            promise = worker.m_taskQueue.trySteal();
+        }
+    };
+
+    // Try to handle local tasks.
+    const auto handleTasks = [this, runTask, stealTasks]() noexcept -> void {
+        bool shouldSteal = true;
+
+        PromiseBase *promise = m_taskQueue.tryPop();
+        if (promise != nullptr)
+            shouldSteal = false;
+
+        while (promise != nullptr) {
+            runTask(promise);
+            promise = m_taskQueue.tryPop();
+        }
+
+        if (!m_localTasks.empty()) {
+            shouldSteal = false;
+            for (const auto &task : m_localTasks)
+                runTask(task);
+
+            m_localTasks.clear();
+        }
+
+        if (shouldSteal)
+            stealTasks();
+    };
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    DWORD bytes;
+    ULONG_PTR key;
+    LPOVERLAPPED ovlp;
+    DWORD error;
+    DWORD timeout;
+    BOOL result;
+    LARGE_INTEGER now;
+
+    // Handle tasks once before entering the event loop.
+    handleTasks();
+
+    while (!m_shouldStop.load(std::memory_order_relaxed)) {
+        // Wait for at most 1 second.
+        timeout = 1000;
+
+        // Check for timeout events.
+        if (!m_timeouts.empty()) {
+            QueryPerformanceCounter(&now);
+            std::int64_t diff = m_timeouts.top().expire - now.QuadPart;
+            if (diff <= 0)
+                diff = 0;
+            else
+                diff /= m_frequency;
+
+            timeout = std::min(static_cast<DWORD>(diff), timeout);
+        }
+
+        result = GetQueuedCompletionStatus(m_iocp, &bytes, &key, &ovlp, timeout);
+        while (true) {
+            error = 0;
+            if (result == FALSE) {
+                error = GetLastError();
+                if (error == WAIT_TIMEOUT)
+                    break;
+            }
+
+            if (ovlp != nullptr) {
+                auto *o = reinterpret_cast<Overlapped *>(ovlp);
+
+                o->error = error;
+                o->bytes = bytes;
+
+                this->schedule(*o->promise);
+            }
+
+            result = GetQueuedCompletionStatus(m_iocp, &bytes, &key, &ovlp, 0);
+        }
+
+        // Handle timeout events.
+        QueryPerformanceCounter(&now);
+        while (!m_timeouts.empty() && m_timeouts.top().expire <= now.QuadPart) {
+            this->schedule(*m_timeouts.top().promise);
+            m_timeouts.pop();
+        }
+
+        handleTasks();
+    }
+#endif
+
+    // Unset thread worker.
+    ThreadWorker = nullptr;
+
+    // Clear running flag so that this worker could be reused.
+    m_isRunning.store(false, std::memory_order_relaxed);
+}
+
+auto SchedulerWorker::stop() noexcept -> void {
+    if (!m_isRunning.load(std::memory_order_acquire))
+        return;
+
+    m_shouldStop.store(true, std::memory_order_release);
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Wake up IOCP.
+    PostQueuedCompletionStatus(m_iocp, 0, 0, nullptr);
+#endif
+}
+
+Scheduler::Scheduler() : m_isRunning{}, m_random{std::random_device{}()}, m_workers{} {
+    std::size_t count = std::max(std::thread::hardware_concurrency(), std::uint32_t{1});
+
+    m_workers.reserve(count);
+    for (std::size_t i = 0; i < count; ++i)
+        m_workers.emplace_back(*this, i);
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Start up Windows socket library.
+    WSADATA data;
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) [[unlikely]]
+        throw std::system_error(WSAGetLastError(), std::system_category(),
+                                "Failed to start WinSock");
+#endif
+}
+
+Scheduler::Scheduler(std::size_t count)
+    : m_isRunning{},
+      m_random{std::random_device{}()},
+      m_workers{} {
+    if (count == 0)
+        count = std::max(std::thread::hardware_concurrency(), std::uint32_t{1});
+
+    m_workers.reserve(count);
+    for (std::size_t i = 0; i < count; ++i)
+        m_workers.emplace_back(*this, i);
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Start up Windows socket library.
+    WSADATA data;
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) [[unlikely]]
+        throw std::system_error(WSAGetLastError(), std::system_category(),
+                                "Failed to start WinSock");
+#endif
+}
+
+Scheduler::~Scheduler() noexcept {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    WSACleanup();
+#endif
+}
+
+auto Scheduler::start() noexcept -> void {
+    if (m_isRunning.exchange(true, std::memory_order_relaxed)) [[unlikely]]
+        std::terminate();
+
+    std::vector<std::thread> threads;
+    threads.reserve(m_workers.size());
+
+    for (std::size_t i = 0; i < m_workers.size(); ++i) {
+        threads.emplace_back([this, i]() noexcept -> void {
+            bindThreadToCpuCore(i);
+            m_workers[i].start();
+        });
+    }
+
+    for (auto &thread : threads)
+        thread.join();
+
+    m_isRunning.store(false, std::memory_order_relaxed);
+}
+
+auto Scheduler::stop() noexcept -> void {
+    for (auto &worker : m_workers)
+        worker.stop();
 }
