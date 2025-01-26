@@ -1,6 +1,6 @@
 ---
 BasedOnStyle: LLVM
-ColumnLimit: 100
+ColumnLimit: 120
 
 IndentWidth: 4
 ContinuationIndentWidth: 4
@@ -16,7 +16,7 @@ AlignConsecutiveBitFields:
   AcrossEmptyLines: true
   AcrossComments: true
 AlignConsecutiveDeclarations:
-  Enabled: false
+  Enabled: true
   AcrossEmptyLines: false
   AcrossComments: false
 AlignConsecutiveMacros:
@@ -35,8 +35,6 @@ AllowShortBlocksOnASingleLine: Empty
 AllowShortCaseLabelsOnASingleLine: true
 AllowShortEnumsOnASingleLine: false
 AllowShortFunctionsOnASingleLine: Empty
-
-AttributeMacros: [ONION_API]
 
 BinPackArguments: true
 BinPackParameters: false
