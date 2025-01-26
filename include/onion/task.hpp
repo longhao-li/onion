@@ -55,7 +55,7 @@ public:
     /// \brief
     ///   Destroy this \c Task object. Destroying a \c Task object will also destroy the coroutine
     ///   promise and the coroutine stack frame.
-    ~Task() {
+    ~Task() noexcept {
         if (m_coroutine)
             m_coroutine.destroy();
     }
@@ -276,7 +276,7 @@ public:
 
     /// \brief
     ///   Destroy this \c PromiseBase object.
-    ~PromiseBase() = default;
+    ~PromiseBase() noexcept = default;
 
     /// \brief
     ///   \c PromiseBase is not copyable.

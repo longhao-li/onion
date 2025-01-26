@@ -79,7 +79,7 @@ target_include_directories(
 include(CheckCXXCompilerFlag)
 
 if(MSVC)
-    target_compile_options(onion PRIVATE /W4 /permissive- /wd4324)
+    target_compile_options(onion PRIVATE /W4 /permissive-)
 
     # Treat warnings as errors.
     if(ONION_WARNINGS_AS_ERRORS)
