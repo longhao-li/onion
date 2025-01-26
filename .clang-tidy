@@ -1,0 +1,5 @@
+---
+Checks: 'clang-diagnostic-*,clang-analyzer-*,cppcoreguidelines-explicit-virtual-functions,cppcoreguidelines-special-member-functions,modernize-*,-modernize-use-default-member-init'
+WarningsAsErrors: 'clang-diagnostic-*,clang-analyzer-*,cppcoreguidelines-explicit-virtual-functions,cppcoreguidelines-special-member-functions'
+FormatStyle: file
+...

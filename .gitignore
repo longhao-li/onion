@@ -1,0 +1,71 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Visual Studio Code
+/.vscode
+/.cache
+/cpm_modules
+compile_commands.json
+compile_flags.txt
+
+# JetBrains IDE
+/.idea
+
+# Build Directory
+/cmake-build*
+/build*
+/out
+
+# macOS System Files
+.DS_Store
+
+# Visual Studio Project Files
+.vs
+
+# Visual Studio CMake Configuration Files
+CMakeSettings.json
+
+# Visual Studio Build Results.
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
