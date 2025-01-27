@@ -9,7 +9,7 @@ namespace onion {
 /// \class IpAddress
 /// \brief
 ///   Represents either an IPv4 or IPv6 address.
-class IpAddress {
+class [[nodiscard]] IpAddress {
 public:
     /// \brief
     ///   Create an empty IP address. An empty IP address is a zero-initialized IPv4 address.
@@ -359,5 +359,237 @@ inline constexpr IpAddress Ipv6Loopback{0, 0, 0, 0, 0, 0, 0, 1};
 /// \brief
 ///   IPv6 any address.
 inline constexpr IpAddress Ipv6Any{0, 0, 0, 0, 0, 0, 0, 0};
+
+/// \class InetAddress
+/// \brief
+///   Wrapper class for Internet socket address. \c InetAddress is a trivial class. This class
+///   could be directly passed as \c sockaddr to system socket API.
+class [[nodiscard]] InetAddress {
+public:
+    /// \brief
+    ///   Create an empty Internet socket address. An empty \c InetAddress object is trivially
+    ///   initialized with zero and should not be used for network operations.
+    constexpr InetAddress() noexcept : m_family{}, m_port{}, m_addr{} {}
+
+    /// \brief
+    ///   Create an Internet socket address with IP address and port number.
+    /// \param ip
+    ///   The IP address of the Internet socket address.
+    /// \param port
+    ///   The port number of the Internet socket address in host endian.
+    constexpr InetAddress(const IpAddress &ip, std::uint16_t port) noexcept
+        : m_family{ip.isIpv4() ? detail::SocketAddressFamily::Internet
+                               : detail::SocketAddressFamily::Internet6},
+          m_port{detail::toNetworkEndian(port)},
+          m_addr{} {
+        if (ip.isIpv4()) {
+            m_addr.v4.address.u32[0] = ip.m_addr.v4.u32[0];
+        } else {
+            m_addr.v6.address[0] = ip.m_addr.v6.u16[0];
+            m_addr.v6.address[1] = ip.m_addr.v6.u16[1];
+            m_addr.v6.address[2] = ip.m_addr.v6.u16[2];
+            m_addr.v6.address[3] = ip.m_addr.v6.u16[3];
+            m_addr.v6.address[4] = ip.m_addr.v6.u16[4];
+            m_addr.v6.address[5] = ip.m_addr.v6.u16[5];
+            m_addr.v6.address[6] = ip.m_addr.v6.u16[6];
+            m_addr.v6.address[7] = ip.m_addr.v6.u16[7];
+        }
+    }
+
+    /// \brief
+    ///   Checks if this is an IPv4 Internet socket address.
+    /// \note
+    ///   Empty \c InetAddress object may be neither IPv4 nor IPv6.
+    /// \retval true
+    ///   This is an IPv4 Internet socket address.
+    /// \retval false
+    ///   This is not an IPv4 Internet socket address.
+    [[nodiscard]]
+    constexpr auto isIpv4() const noexcept -> bool {
+        return m_family == detail::SocketAddressFamily::Internet;
+    }
+
+    /// \brief
+    ///   Checks if this is an IPv6 Internet socket address.
+    /// \note
+    ///   Empty \c InetAddress object may be neither IPv4 nor IPv6.
+    /// \retval true
+    ///   This is an IPv6 Internet socket address.
+    /// \retval false
+    ///   This is not an IPv6 Internet socket address.
+    [[nodiscard]]
+    constexpr auto isIpv6() const noexcept -> bool {
+        return m_family == detail::SocketAddressFamily::Internet6;
+    }
+
+    /// \brief
+    ///   Get IP address of this Internet socket address. The return value could be random value if
+    ///   this is neither IPv4 nor IPv6.
+    /// \return
+    ///   The IP address of this Internet socket address.
+    [[nodiscard]]
+    constexpr auto ip() const noexcept -> IpAddress {
+        if (isIpv4()) {
+            return {
+                m_addr.v4.address.u8[0],
+                m_addr.v4.address.u8[1],
+                m_addr.v4.address.u8[2],
+                m_addr.v4.address.u8[3],
+            };
+        }
+
+        IpAddress addr;
+        addr.m_isIpv6 = true;
+
+        addr.m_addr.v6.u16[0] = m_addr.v6.address[0];
+        addr.m_addr.v6.u16[1] = m_addr.v6.address[1];
+        addr.m_addr.v6.u16[2] = m_addr.v6.address[2];
+        addr.m_addr.v6.u16[3] = m_addr.v6.address[3];
+        addr.m_addr.v6.u16[4] = m_addr.v6.address[4];
+        addr.m_addr.v6.u16[5] = m_addr.v6.address[5];
+        addr.m_addr.v6.u16[6] = m_addr.v6.address[6];
+        addr.m_addr.v6.u16[7] = m_addr.v6.address[7];
+
+        return addr;
+    }
+
+    /// \brief
+    ///   Set IP address of this Internet socket address.
+    /// \param ip
+    ///   The IP address to be set.
+    constexpr auto setIp(const IpAddress &address) noexcept -> void {
+        if (address.isIpv4()) {
+            m_family                 = detail::SocketAddressFamily::Internet;
+            m_addr.v4.address.u32[0] = address.m_addr.v4.u32[0];
+        } else {
+            m_family             = detail::SocketAddressFamily::Internet6;
+            m_addr.v6.address[0] = address.m_addr.v6.u16[0];
+            m_addr.v6.address[1] = address.m_addr.v6.u16[1];
+            m_addr.v6.address[2] = address.m_addr.v6.u16[2];
+            m_addr.v6.address[3] = address.m_addr.v6.u16[3];
+            m_addr.v6.address[4] = address.m_addr.v6.u16[4];
+            m_addr.v6.address[5] = address.m_addr.v6.u16[5];
+            m_addr.v6.address[6] = address.m_addr.v6.u16[6];
+            m_addr.v6.address[7] = address.m_addr.v6.u16[7];
+        }
+    }
+
+    /// \brief
+    ///   Get port number of this Internet socket address.
+    /// \return
+    ///   The port number of this Internet socket address in host endian.
+    [[nodiscard]]
+    constexpr auto port() const noexcept -> std::uint16_t {
+        return detail::toHostEndian(m_port);
+    }
+
+    /// \brief
+    ///   Set port number of this Internet socket address.
+    /// \param port
+    ///   The port number to be set in host endian.
+    constexpr auto setPort(std::uint16_t port) noexcept -> void {
+        m_port = detail::toNetworkEndian(port);
+    }
+
+    /// \brief
+    ///   Get IPv6 flow information of this Internet socket address. The return value could be
+    ///   random value if this is not an IPv6 address.
+    /// \return
+    ///   The flow information of this Internet socket address in host endian.
+    [[nodiscard]]
+    constexpr auto flowInfo() const noexcept -> std::uint32_t {
+        return m_addr.v6.flowInfo;
+    }
+
+    /// \brief
+    ///   Set IPv6 flow information of this Internet socket address. Setting flow info for IPv4
+    ///   address affects nothing.
+    /// \param info
+    ///   The flow information to be set in host endian.
+    constexpr auto setFlowInfo(std::uint32_t info) noexcept -> void {
+        if (!isIpv6())
+            return;
+        m_addr.v6.flowInfo = info;
+    }
+
+    /// \brief
+    ///   Get IPv6 scope ID of this Internet socket address. The return value could be random value
+    ///   if this is not an IPv6 address.
+    /// \return
+    ///   The scope ID of this Internet socket address in host endian.
+    [[nodiscard]]
+    constexpr auto scopeId() const noexcept -> std::uint32_t {
+        return m_addr.v6.scopeId;
+    }
+
+    /// \brief
+    ///   Set IPv6 scope ID of this Internet socket address. Setting scope ID for IPv4 address
+    ///   affects nothing.
+    /// \param id
+    ///   The scope ID to be set in host endian.
+    constexpr auto setScopeId(std::uint32_t id) noexcept -> void {
+        if (!isIpv6())
+            return;
+        m_addr.v6.scopeId = id;
+    }
+
+    /// \brief
+    ///   Checks if this Internet socket address is the same as another one.
+    /// \param other
+    ///   The Internet socket address to be compared with.
+    /// \retval true
+    ///   This Internet socket address is the same as \p other.
+    /// \retval false
+    ///   This Internet socket address is different from \p other.
+    [[nodiscard]]
+    constexpr auto operator==(const InetAddress &other) const noexcept -> bool {
+        if (m_family != other.m_family || m_port != other.m_port)
+            return false;
+
+        if (isIpv4())
+            return m_addr.v4.address.u32[0] == other.m_addr.v4.address.u32[0];
+
+        return m_addr.v6.address[0] == other.m_addr.v6.address[0] &&
+               m_addr.v6.address[1] == other.m_addr.v6.address[1] &&
+               m_addr.v6.address[2] == other.m_addr.v6.address[2] &&
+               m_addr.v6.address[3] == other.m_addr.v6.address[3] &&
+               m_addr.v6.address[4] == other.m_addr.v6.address[4] &&
+               m_addr.v6.address[5] == other.m_addr.v6.address[5] &&
+               m_addr.v6.address[6] == other.m_addr.v6.address[6] &&
+               m_addr.v6.address[7] == other.m_addr.v6.address[7];
+    }
+
+    /// \brief
+    ///   Checks if this Internet socket address is different from another one.
+    /// \param other
+    ///   The Internet socket address to be compared with.
+    /// \retval true
+    ///   This Internet socket address is different from \p other.
+    /// \retval false
+    ///   This Internet socket address is the same as \p other.
+    [[nodiscard]]
+    constexpr auto operator!=(const InetAddress &other) const noexcept -> bool {
+        return !(*this == other);
+    }
+
+private:
+    detail::SocketAddressFamily m_family;
+    std::uint16_t m_port;
+    union {
+        struct {
+            union {
+                std::uint8_t u8[4];
+                std::uint16_t u16[2];
+                std::uint32_t u32[1];
+            } address;
+            std::uint8_t zero[8];
+        } v4;
+        struct {
+            std::uint32_t flowInfo;
+            std::uint16_t address[8];
+            std::uint32_t scopeId;
+        } v6;
+    } m_addr;
+};
 
 } // namespace onion

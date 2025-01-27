@@ -1,4 +1,4 @@
-#include "onion/ip_address.hpp"
+#include "onion/inet_address.hpp"
 
 #include <algorithm>
 #include <array>
