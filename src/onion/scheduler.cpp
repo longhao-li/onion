@@ -695,6 +695,22 @@ auto SchedulerWorker::stop() noexcept -> void {
 #endif
 }
 
+auto SchedulerWorker::threadWorker() noexcept -> SchedulerWorker * {
+    return ThreadWorker;
+}
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+auto SchedulerWorker::schedule(PromiseBase &promise, std::uint32_t timeout) noexcept -> void {
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+
+    m_timeouts.push({
+        .expire  = now.QuadPart + timeout * m_frequency,
+        .promise = &promise,
+    });
+}
+#endif
+
 Scheduler::Scheduler() : m_isRunning{}, m_random{std::random_device{}()}, m_workers{} {
     std::size_t count = std::max(std::thread::hardware_concurrency(), std::uint32_t{1});
 

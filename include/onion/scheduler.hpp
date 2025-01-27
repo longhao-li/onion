@@ -3,6 +3,7 @@
 #include "task.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <queue>
 #include <random>
 #include <span>
@@ -230,16 +231,6 @@ public:
         this->schedule(static_cast<PromiseBase &>(coroutine.promise()));
     }
 
-    /// \brief
-    ///   For internal usage. Schedule a task in this worker. This method is not concurrent safe and
-    ///   could only be called in owner thread.
-    /// \param[in] promise
-    ///   Promise of the task to be scheduled.
-    auto schedule(PromiseBase &promise) noexcept -> void {
-        if (!m_taskQueue.tryPush(&promise)) [[unlikely]]
-            m_localTasks.push_back(&promise);
-    }
-
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     /// \brief
     ///   For internal usage. Get IOCP of this worker.
@@ -259,6 +250,27 @@ public:
     ONION_API static auto threadWorker() noexcept -> SchedulerWorker *;
 
 private:
+    /// \brief
+    ///   For internal usage. Schedule a task in this worker. This method is not concurrent safe and
+    ///   could only be called in owner thread.
+    /// \param[in] promise
+    ///   Promise of the task to be scheduled.
+    auto schedule(PromiseBase &promise) noexcept -> void {
+        if (!m_taskQueue.tryPush(&promise)) [[unlikely]]
+            m_localTasks.push_back(&promise);
+    }
+
+    /// \brief
+    ///   Suspend the specified task in this worker. This method is not concurrent safe and could
+    ///   only be called in owner thread.
+    /// \param[in] promise
+    ///   Promise of the task to be suspended.
+    auto suspend(PromiseBase &promise) noexcept -> void {
+        m_taskQueue.tryPush(&promise);
+    }
+
+    friend class YieldAwaitable;
+
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     /// \struct TimeoutEvent
     /// \brief
@@ -288,6 +300,7 @@ private:
     friend class SleepAwaitable;
 #endif
 
+private:
     /// \brief
     ///   A flag that indicates whether this worker is running.
     std::atomic_bool m_isRunning;
@@ -483,5 +496,152 @@ private:
     ///   Worker list for this scheduler.
     std::vector<detail::SchedulerWorker> m_workers;
 };
+
+} // namespace onion
+
+namespace onion {
+namespace detail {
+
+/// \class YieldAwaitable
+/// \brief
+///   Awaitable object for yielding current coroutine so that the scheduler can schedule another
+///   coroutine immediately.
+class [[nodiscard]] YieldAwaitable {
+public:
+    /// \brief
+    ///   C++20 coroutine API method. Always execute \c await_suspend().
+    /// \return
+    ///   This method always returns \c false.
+    [[nodiscard]]
+    static constexpr auto await_ready() noexcept -> bool {
+        return false;
+    }
+
+    /// \brief
+    ///   Prepare for yielding and suspending current coroutine.
+    /// \tparam T
+    ///   Type of promise of current coroutine.
+    /// \param coroutine
+    ///   Current coroutine handle.
+    template <typename T>
+    static auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> void {
+        auto *worker = detail::SchedulerWorker::threadWorker();
+        worker->suspend(coroutine.promise());
+    }
+
+    /// \brief
+    ///   C++20 coroutine API. Resume current coroutine and get the async operation result. Do
+    ///   nothing.
+    static constexpr auto await_resume() noexcept -> void {}
+};
+
+/// \class SleepAwaitable
+/// \brief
+///   Awaitable object for suspending current coroutine for a while.
+class [[nodiscard]] SleepAwaitable {
+public:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    /// \brief
+    ///   Create a new \c SleepAwaitable object to suspend current coroutine for a while.
+    /// \tparam Rep
+    ///   Representation for \c std::chrono::duration. See C++ reference for more details.
+    /// \tparam Period
+    ///   Period for \c std::chrono::duration. See C++ reference for more details.
+    /// \param duration
+    ///   Time to suspend current coroutine. Passing nevative or zero duration will not suspend
+    ///   current coroutine.
+    template <typename Rep, typename Period>
+    constexpr SleepAwaitable(std::chrono::duration<Rep, Period> duration) noexcept : m_timeout{} {
+        auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
+        auto count        = milliseconds.count();
+
+        if (count > 0) [[likely]]
+            m_timeout = static_cast<std::uint32_t>(count);
+    }
+#endif
+
+    /// \brief
+    ///   C++20 coroutine API method. Always execute \c await_suspend().
+    /// \return
+    ///   This function always returns \c false.
+    [[nodiscard]]
+    static constexpr auto await_ready() noexcept -> bool {
+        return false;
+    }
+
+    /// \brief
+    ///   Prepare for async sleep operation and suspend this coroutine.
+    /// \tparam T
+    ///   Type of promise of current coroutine.
+    /// \param coroutine
+    ///   Current coroutine handle.
+    /// \retval true
+    ///   This coroutine should be suspended and resumed later.
+    /// \retval false
+    ///   Timeout is negative or zero, this coroutine should not be suspended.
+    template <typename T>
+    auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        if (m_timeout == 0)
+            return false;
+
+        auto *worker = detail::SchedulerWorker::threadWorker();
+        worker->schedule(coroutine.promise(), m_timeout);
+        return true;
+#endif
+    }
+
+    /// \brief
+    ///   C++20 coroutine API. Resume current coroutine and get result of this sleep operation. Do
+    ///   nothing.
+    static constexpr auto await_resume() noexcept -> void {}
+
+private:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    /// \brief
+    ///   Timeout in milliseconds.
+    std::uint32_t m_timeout;
+#endif
+};
+
+} // namespace detail
+
+/// \brief
+///   Schedule a new task into current thread worker. This method could only be called in worker
+///   threads.
+/// \tparam T
+///   Return type of the scheduled task. Usually this should be \c void.
+/// \param task
+///   The task to be scheduled. This task should be the coroutine stack bottom task.
+template <typename T>
+auto schedule(Task<T> task) noexcept -> void {
+    auto *worker = detail::SchedulerWorker::threadWorker();
+    worker->schedule(std::move(task));
+}
+
+/// \brief
+///   Yield current coroutine so that the scheduler can schedule another coroutine immediately.
+/// \return
+///   An awaitable object to yield current coroutine.
+constexpr auto yield() noexcept -> detail::YieldAwaitable {
+    return {};
+}
+
+/// \brief
+///   Suspend current coroutine for a while.
+/// \tparam Rep
+///   Representation for \c std::chrono::duration. See C++ reference for more details.
+/// \tparam Period
+///   Period for \c std::chrono::duration. See C++ reference for more details.
+/// \param duration
+///   Time to suspend current coroutine. Passing nevative or zero duration will not suspend current
+///   coroutine.
+/// \return
+///   An awaitable object to suspend current coroutine for a while.
+template <typename Rep, typename Period>
+constexpr auto sleep(std::chrono::duration<Rep, Period> duration) noexcept
+    -> detail::SleepAwaitable {
+    return {duration};
+}
 
 } // namespace onion
