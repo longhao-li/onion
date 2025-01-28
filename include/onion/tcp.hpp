@@ -134,6 +134,10 @@ public:
                 .status = static_cast<std::int32_t>(m_ovlp.error),
                 .size   = m_ovlp.bytes,
             };
+#elif defined(__linux) || defined(__linux__)
+            if (m_ovlp.result >= 0) [[likely]]
+                return {.status = {}, .size = static_cast<std::uint32_t>(m_ovlp.result)};
+            return {.status = -m_ovlp.result, .size = 0};
 #endif
         }
 
@@ -210,6 +214,10 @@ public:
                 .status = static_cast<std::int32_t>(m_ovlp.error),
                 .size   = m_ovlp.bytes,
             };
+#elif defined(__linux) || defined(__linux__)
+            if (m_ovlp.result >= 0) [[likely]]
+                return {.status = {}, .size = static_cast<std::uint32_t>(m_ovlp.result)};
+            return {.status = -m_ovlp.result, .size = 0};
 #endif
         }
 

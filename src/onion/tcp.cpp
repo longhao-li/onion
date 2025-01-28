@@ -3,6 +3,10 @@
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
 #    include <WS2tcpip.h>
 #    include <mswsock.h>
+#elif defined(__linux) || defined(__linux__)
+#    include <liburing.h>
+#    include <netinet/in.h>
+#    include <netinet/tcp.h>
 #endif
 
 using namespace onion;
@@ -124,6 +128,21 @@ auto TcpStream::ConnectAwaitable::await_resume() const noexcept -> SystemErrorCo
         closesocket(m_socket);
 
     return m_ovlp.error;
+#elif defined(__linux) || defined(__linux__)
+    if (m_ovlp.result == 0) {
+        if (m_stream->m_socket != InvalidSocket)
+            ::close(m_stream->m_socket);
+
+        m_stream->m_socket  = m_socket;
+        m_stream->m_address = *m_address;
+
+        return {};
+    }
+
+    if (m_socket != InvalidSocket)
+        ::close(m_socket);
+
+    return -m_ovlp.result;
 #endif
 }
 
@@ -177,6 +196,38 @@ auto TcpStream::ConnectAwaitable::await_suspend() noexcept -> bool {
 
     m_ovlp.error = static_cast<std::uint32_t>(error);
     return false;
+#elif defined(__linux) || defined(__linux__)
+    // Create a new socket for the connection.
+    auto *addr        = reinterpret_cast<const sockaddr *>(m_address);
+    socklen_t addrlen = (addr->sa_family == AF_INET) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+
+    m_socket = ::socket(addr->sa_family, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    if (m_socket == -1) [[unlikely]] {
+        m_ovlp.result = -errno;
+        return false;
+    }
+
+    // Prepare for async connect operation.
+    auto *worker = SchedulerWorker::threadWorker();
+
+    auto *ring        = static_cast<io_uring *>(worker->ioMultiplexer());
+    io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        int result = io_uring_submit(ring);
+        if (result < 0) [[unlikely]] {
+            m_ovlp.result = result;
+            return false;
+        }
+
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    io_uring_prep_connect(sqe, m_socket, addr, addrlen);
+    io_uring_sqe_set_flags(sqe, 0);
+    io_uring_sqe_set_data(sqe, &m_ovlp);
+
+    io_uring_submit(ring);
+    return true;
 #endif
 }
 
@@ -209,6 +260,42 @@ auto TcpStream::SendAwaitable::await_suspend() noexcept -> bool {
     // Send operation failed.
     m_ovlp.error = static_cast<std::uint32_t>(error);
     return false;
+#elif defined(__linux) || defined(__linux__)
+    // Try to send data immediately.
+    int result = ::send(m_socket, m_data, m_size, MSG_DONTWAIT | MSG_NOSIGNAL);
+    if (result >= 0) {
+        m_ovlp.result = result;
+        return false;
+    }
+
+    // Error sending data.
+    int error = errno;
+    if (error != EAGAIN && error != EWOULDBLOCK) {
+        m_ovlp.result = -error;
+        return false;
+    }
+
+    // Schedule the send operation.
+    auto *worker = SchedulerWorker::threadWorker();
+
+    auto *ring        = static_cast<io_uring *>(worker->ioMultiplexer());
+    io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        int result = io_uring_submit(ring);
+        if (result < 0) [[unlikely]] {
+            m_ovlp.result = result;
+            return false;
+        }
+
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    io_uring_prep_send(sqe, m_socket, m_data, m_size, MSG_NOSIGNAL);
+    io_uring_sqe_set_flags(sqe, IOSQE_ASYNC);
+    io_uring_sqe_set_data(sqe, &m_ovlp);
+
+    io_uring_submit(ring);
+    return true;
 #endif
 }
 
@@ -242,6 +329,42 @@ auto TcpStream::ReceiveAwaitable::await_suspend() noexcept -> bool {
     // Receive operation failed.
     m_ovlp.error = static_cast<std::uint32_t>(error);
     return false;
+#elif defined(__linux) || defined(__linux__)
+    // Try to receive data immediately.
+    int result = ::recv(m_socket, m_buffer, m_size, MSG_DONTWAIT);
+    if (result >= 0) {
+        m_ovlp.result = result;
+        return false;
+    }
+
+    // Error receiving data.
+    int error = errno;
+    if (error != EAGAIN && error != EWOULDBLOCK) {
+        m_ovlp.result = -error;
+        return false;
+    }
+
+    // Schedule the receive operation.
+    auto *worker = SchedulerWorker::threadWorker();
+
+    auto *ring        = static_cast<io_uring *>(worker->ioMultiplexer());
+    io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        int result = io_uring_submit(ring);
+        if (result < 0) [[unlikely]] {
+            m_ovlp.result = result;
+            return false;
+        }
+
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    io_uring_prep_recv(sqe, m_socket, m_buffer, m_size, 0);
+    io_uring_sqe_set_flags(sqe, IOSQE_ASYNC);
+    io_uring_sqe_set_data(sqe, &m_ovlp);
+
+    io_uring_submit(ring);
+    return true;
 #endif
 }
 
@@ -297,6 +420,28 @@ auto TcpStream::connect(const InetAddress &address) noexcept -> SystemErrorCode 
     m_address = address;
 
     return {};
+#elif defined(__linux) || defined(__linux__)
+    // Create a new socket for the connection.
+    auto *addr        = reinterpret_cast<const sockaddr *>(&m_address);
+    socklen_t addrlen = (addr->sa_family == AF_INET) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+
+    int s = ::socket(addr->sa_family, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    if (s == -1) [[unlikely]]
+        return errno;
+
+    // Try to connect to the peer address.
+    if (::connect(s, addr, addrlen) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return error;
+    }
+
+    this->close();
+
+    m_socket  = s;
+    m_address = address;
+
+    return {};
 #endif
 }
 
@@ -310,6 +455,11 @@ auto TcpStream::send(const void *data, std::uint32_t size) noexcept -> SystemIoR
 
     std::ignore = WSASend(m_socket, &buffer, 1, &bytes, 0, nullptr, nullptr);
     return {.status = WSAGetLastError(), .size = bytes};
+#elif defined(__linux) || defined(__linux__)
+    ssize_t result = ::send(m_socket, data, size, MSG_NOSIGNAL);
+    if (result >= 0) [[likely]]
+        return {.status = {}, .size = static_cast<std::uint32_t>(result)};
+    return {.status = errno, .size = 0};
 #endif
 }
 
@@ -324,6 +474,11 @@ auto TcpStream::receive(void *buffer, std::uint32_t size) noexcept -> SystemIoRe
 
     std::ignore = WSARecv(m_socket, &buf, 1, &bytes, &flags, nullptr, nullptr);
     return {.status = WSAGetLastError(), .size = bytes};
+#elif defined(__linux) || defined(__linux__)
+    ssize_t result = ::recv(m_socket, buffer, size, 0);
+    if (result >= 0) [[likely]]
+        return {.status = {}, .size = static_cast<std::uint32_t>(result)};
+    return {.status = errno, .size = 0};
 #endif
 }
 
@@ -333,6 +488,11 @@ auto TcpStream::setKeepAlive(bool enable) noexcept -> SystemErrorCode {
     std::ignore = setsockopt(m_socket, SOL_SOCKET, SO_KEEPALIVE,
                              reinterpret_cast<const char *>(&value), sizeof(value));
     return WSAGetLastError();
+#elif defined(__linux) || defined(__linux__)
+    int value = enable ? 1 : 0;
+    if (setsockopt(m_socket, SOL_SOCKET, SO_KEEPALIVE, &value, sizeof(value)) == -1) [[unlikely]]
+        return errno;
+    return {};
 #endif
 }
 
@@ -342,6 +502,11 @@ auto TcpStream::setNoDelay(bool enable) noexcept -> SystemErrorCode {
     std::ignore = setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY,
                              reinterpret_cast<const char *>(&value), sizeof(value));
     return WSAGetLastError();
+#elif defined(__linux) || defined(__linux__)
+    int value = enable ? 1 : 0;
+    if (setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY, &value, sizeof(value)) == -1) [[unlikely]]
+        return errno;
+    return {};
 #endif
 }
 
@@ -350,6 +515,11 @@ auto TcpStream::close() noexcept -> void {
     if (m_socket != INVALID_SOCKET) {
         closesocket(m_socket);
         m_socket = INVALID_SOCKET;
+    }
+#elif defined(__linux) || defined(__linux__)
+    if (m_socket != InvalidSocket) {
+        ::close(m_socket);
+        m_socket = InvalidSocket;
     }
 #endif
 }
@@ -360,6 +530,15 @@ auto TcpStream::setSendTimeout(std::uint32_t milliseconds) noexcept -> SystemErr
     std::ignore = setsockopt(m_socket, SOL_SOCKET, SO_SNDTIMEO,
                              reinterpret_cast<const char *>(&value), sizeof(value));
     return WSAGetLastError();
+#elif defined(__linux) || defined(__linux__)
+    struct timeval timeout{
+        .tv_sec  = milliseconds / 1000,
+        .tv_usec = (milliseconds % 1000) * 1000,
+    };
+
+    if (setsockopt(m_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == -1) [[unlikely]]
+        return errno;
+    return {};
 #endif
 }
 
@@ -369,5 +548,14 @@ auto TcpStream::setReceiveTimeout(std::uint32_t milliseconds) noexcept -> System
     std::ignore = setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO,
                              reinterpret_cast<const char *>(&value), sizeof(value));
     return WSAGetLastError();
+#elif defined(__linux) || defined(__linux__)
+    struct timeval timeout{
+        .tv_sec  = milliseconds / 1000,
+        .tv_usec = (milliseconds % 1000) * 1000,
+    };
+
+    if (setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1) [[unlikely]]
+        return errno;
+    return {};
 #endif
 }
