@@ -87,6 +87,83 @@ static auto connectEx(SOCKET s,
 }
 
 /// \brief
+///   Try to acquire the \c AcceptEx function pointer.
+/// \return
+///   The \c AcceptEx function pointer if successful. Otherwise, return \c nullptr and the error
+///   code is set to \c WSAGetLastError().
+[[nodiscard]]
+static auto acquireAcceptEx() noexcept -> LPFN_ACCEPTEX {
+    // Create a dummy socket to call WSAIoctl
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) [[unlikely]]
+        return nullptr;
+
+    // Get the AcceptEx function pointer
+    LPFN_ACCEPTEX acceptEx = nullptr;
+
+    DWORD bytes = 0;
+    GUID guid   = WSAID_ACCEPTEX;
+
+    int result = WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid), &acceptEx,
+                          sizeof(acceptEx), &bytes, nullptr, nullptr);
+
+    if (result != 0) [[unlikely]] {
+        int error = WSAGetLastError();
+        closesocket(s);
+        WSASetLastError(error);
+        return nullptr;
+    }
+
+    closesocket(s);
+    return acceptEx;
+}
+
+/// \brief
+///   Try to accept a new connection asynchronously.
+/// \param listenSocket
+///   The socket that listens for incoming connections.
+/// \param acceptSocket
+///   The socket that accepts the new connection.
+/// \param outputBuffer
+///   The buffer to store extra received data.
+/// \param receiveDataLength
+///   Size of the output buffer.
+/// \param localAddressLength
+///   Size of the local address.
+/// \param remoteAddressLength
+///   Size of the remote address.
+/// \param[out] bytesReceived
+///   The number of bytes received in output buffer.
+/// \param[inout] overlapped
+///   The overlapped structure for asynchronous operation.
+static auto acceptEx(SOCKET listenSocket,
+                     SOCKET acceptSocket,
+                     PVOID outputBuffer,
+                     DWORD receiveDataLength,
+                     DWORD localAddressLength,
+                     DWORD remoteAddressLength,
+                     LPDWORD bytesReceived,
+                     LPOVERLAPPED overlapped) noexcept -> BOOL {
+    std::atomic<LPFN_ACCEPTEX> function(nullptr);
+
+    // Try to accept new connection if the function pointer is valid.
+    LPFN_ACCEPTEX accept = function.load(std::memory_order_relaxed);
+    if (accept != nullptr) [[likely]]
+        return accept(listenSocket, acceptSocket, outputBuffer, receiveDataLength,
+                      localAddressLength, remoteAddressLength, bytesReceived, overlapped);
+
+    accept = acquireAcceptEx();
+    if (accept == nullptr) [[unlikely]]
+        return FALSE;
+
+    // It is safe to store the function pointer for multiple times in multiple threads. We just need
+    // to ensure that one of them is correct.
+    function.store(accept, std::memory_order_relaxed);
+    return accept(listenSocket, acceptSocket, outputBuffer, receiveDataLength, localAddressLength,
+                  remoteAddressLength, bytesReceived, overlapped);
+}
+
+/// \brief
 ///   A helper function to register the socket with IOCP and set the notification modes.
 /// \param s
 ///   The socket to register.
@@ -557,5 +634,149 @@ auto TcpStream::setReceiveTimeout(std::uint32_t milliseconds) noexcept -> System
     if (setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1) [[unlikely]]
         return errno;
     return {};
+#endif
+}
+
+auto TcpListener::AcceptAwaitable::await_resume() const -> TcpStream {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    if (m_ovlp.error != 0) [[unlikely]] {
+        if (m_connection != INVALID_SOCKET)
+            closesocket(m_connection);
+        throw std::system_error(m_ovlp.error, std::system_category(), "TcpListener::accept");
+    }
+
+    return {m_connection, m_address};
+#endif
+}
+
+auto TcpListener::AcceptAwaitable::await_suspend() noexcept -> bool {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Create a new socket for the incoming connection.
+    auto *addr   = reinterpret_cast<sockaddr *>(&m_address);
+    m_connection = WSASocketW(addr->sa_family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
+                              WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+
+    if (m_connection == INVALID_SOCKET) [[unlikely]] {
+        m_ovlp.error = static_cast<std::uint32_t>(WSAGetLastError());
+        return false;
+    }
+
+    // Register to IOCP.
+    if (registerAndSetNotificationModes(m_connection) == FALSE) [[unlikely]] {
+        m_ovlp.error = static_cast<std::uint32_t>(GetLastError());
+        closesocket(m_connection);
+        return false;
+    }
+
+    // Try to accept a new incoming connection.
+    DWORD bytes = 0;
+    if (acceptEx(m_server, m_connection, &m_address, 0, 0, sizeof(m_address) + sizeof(m_padding),
+                 &bytes, reinterpret_cast<LPOVERLAPPED>(&m_ovlp)) == TRUE) {
+        m_ovlp.error = 0;
+        return false;
+    }
+
+    int error = WSAGetLastError();
+    if (error == 0) [[unlikely]] {
+        m_ovlp.error = 0;
+        return false;
+    }
+
+    if (error == ERROR_IO_PENDING) [[likely]]
+        return true;
+
+    m_ovlp.error = static_cast<std::uint32_t>(error);
+    return false;
+#endif
+}
+
+TcpListener::~TcpListener() noexcept {
+    this->close();
+}
+
+auto TcpListener::operator=(TcpListener &&other) noexcept -> TcpListener & {
+    if (this == &other) [[unlikely]]
+        return *this;
+
+    this->close();
+
+    m_socket  = other.m_socket;
+    m_address = other.m_address;
+
+    other.m_socket  = InvalidSocket;
+    other.m_address = {};
+
+    return *this;
+}
+
+auto TcpListener::listen(const InetAddress &address) noexcept -> SystemErrorCode {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Create a new socket for the server.
+    auto *addr  = reinterpret_cast<const sockaddr *>(&address);
+    int addrlen = (addr->sa_family == AF_INET) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+    SOCKET s    = WSASocketW(addr->sa_family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
+                             WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+
+    if (s == INVALID_SOCKET) [[unlikely]]
+        return WSAGetLastError();
+
+    // Enable SO_REUSEADDR option.
+    const DWORD value = 1;
+    if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char *>(&value),
+                   sizeof(value)) == SOCKET_ERROR) [[unlikely]] {
+        int error = WSAGetLastError();
+        closesocket(s);
+        return error;
+    }
+
+    // Register the socket to IOCP.
+    if (registerAndSetNotificationModes(s) == FALSE) [[unlikely]] {
+        DWORD error = GetLastError();
+        closesocket(s);
+        return error;
+    }
+
+    // Bind the socket to the specified address.
+    if (::bind(s, addr, addrlen) == SOCKET_ERROR) [[unlikely]] {
+        int error = WSAGetLastError();
+        closesocket(s);
+        return error;
+    }
+
+    // Start listening on the socket.
+    if (::listen(s, SOMAXCONN) == SOCKET_ERROR) [[unlikely]] {
+        int error = WSAGetLastError();
+        closesocket(s);
+        return error;
+    }
+
+    this->close();
+
+    m_socket  = s;
+    m_address = address;
+
+    return {};
+#endif
+}
+
+auto TcpListener::accept() const -> TcpStream {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    InetAddress address;
+    int addrlen = sizeof(address);
+
+    SOCKET s = WSAAccept(m_socket, reinterpret_cast<sockaddr *>(&address), &addrlen, nullptr, 0);
+    if (s == INVALID_SOCKET) [[unlikely]]
+        throw std::system_error(WSAGetLastError(), std::system_category(), "TcpListener::accept");
+
+    return {s, address};
+#endif
+}
+
+auto TcpListener::close() noexcept -> void {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    if (m_socket != INVALID_SOCKET) {
+        closesocket(m_socket);
+        m_socket = INVALID_SOCKET;
+    }
 #endif
 }

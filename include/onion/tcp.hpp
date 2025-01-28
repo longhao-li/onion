@@ -457,4 +457,169 @@ private:
     InetAddress m_address;
 };
 
+/// \class TcpListener
+/// \brief
+///   \c TcpListener represents a TCP connection listener. This class could only be used in workers.
+class TcpListener {
+public:
+    /// \class AcceptAwaitable
+    /// \brief
+    ///   Awaitable object for asynchronous connection acceptance.
+    class [[nodiscard]] AcceptAwaitable {
+    public:
+        /// \brief
+        ///   Create a new \c AcceptAwaitable object for asynchronous connection acceptance.
+        /// \param listener
+        ///   The TCP listener socket to accept new connection.
+        explicit AcceptAwaitable(detail::socket_t listener) noexcept
+            : m_ovlp{},
+              m_server{listener},
+              m_connection{detail::InvalidSocket},
+              m_address{} {}
+
+        /// \brief
+        ///   C++20 coroutine API method. Always execute \c await_suspend().
+        /// \return
+        ///   This function always returns \c false.
+        [[nodiscard]]
+        static constexpr auto await_ready() noexcept -> bool {
+            return false;
+        }
+
+        /// \brief
+        ///   Prepare for async accept operation and suspend the coroutine.
+        /// \tparam T
+        ///   Type of promise of current coroutine.
+        /// \param coroutine
+        ///   Current coroutine handle.
+        /// \retval true
+        ///   This coroutine should be suspended and resumed later.
+        /// \retval false
+        ///   This coroutine should not be suspended and should be resumed immediately.
+        template <typename T>
+        auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
+            m_ovlp.promise = &coroutine.promise();
+            return this->await_suspend();
+        }
+
+        /// \brief
+        ///   Get the result of the asynchronous accept operation.
+        /// \return
+        ///   A \c TcpStream object that represents the new accepted TCP connection.
+        /// \throws std::system_error
+        ///   Thrown if failed to accept new connection.
+        [[nodiscard]]
+        ONION_API auto await_resume() const -> TcpStream;
+
+    private:
+        /// \brief
+        ///   Prepare for async accept operation and suspend the coroutine.
+        /// \retval true
+        ///   This coroutine should be suspended and be resumed later when a new connection is
+        ///   accepted or failed.
+        /// \retval false
+        ///   Connection accepting succeeded or failed immediately and this coroutine should not be
+        ///   suspended.
+        ONION_API auto await_suspend() noexcept -> bool;
+
+    private:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        detail::Overlapped m_ovlp;
+        detail::socket_t m_server;
+        detail::socket_t m_connection;
+        InetAddress m_address;
+
+        [[maybe_unused]]
+        std::byte m_padding[16];
+#endif
+    };
+
+public:
+    /// \brief
+    ///   Create an empty \c TcpListener object. Empty \c TcpListener object is not bound to any TCP
+    ///   address and cannot accept any connection.
+    TcpListener() noexcept : m_socket{detail::InvalidSocket}, m_address{} {}
+
+    /// \brief
+    ///   \c TcpListener is not copyable.
+    TcpListener(const TcpListener &other) = delete;
+
+    /// \brief
+    ///   Move constructor of \c TcpListener.
+    /// \param[inout] other
+    ///   The \c TcpListener object to move. The moved \c TcpListener object will be empty.
+    TcpListener(TcpListener &&other) noexcept
+        : m_socket{other.m_socket},
+          m_address{other.m_address} {
+        other.m_socket = detail::InvalidSocket;
+    }
+
+    /// \brief
+    ///   Destroy this TCP listener and release resources.
+    ONION_API ~TcpListener() noexcept;
+
+    /// \brief
+    ///   \c TcpListener is not copyable.
+    auto operator=(const TcpListener &other) = delete;
+
+    /// \brief
+    ///   Move assignment operator of \c TcpListener.
+    /// \param[inout] other
+    ///   The \c TcpListener object to move. The moved \c TcpListener object will be empty.
+    /// \return
+    ///   Reference to this \c TcpListener object.
+    ONION_API auto operator=(TcpListener &&other) noexcept -> TcpListener &;
+
+    /// \brief
+    ///   Get local address of this server. The return value could be random if this \c TcpListener
+    ///   object is empty.
+    /// \return
+    ///   Local address of this server.
+    [[nodiscard]]
+    auto localAddress() const noexcept -> const InetAddress & {
+        return m_address;
+    }
+
+    /// \brief
+    ///   Start listening to the specified address. This \c TcpListener object will not be affected
+    ///   if failed to bind to the specified address.
+    /// \param[in] address
+    ///   The address to bind. The address could be either an IPv4 or IPv6 address.
+    /// \return
+    ///   A system error code object that represents system error. The error code is 0 if this
+    ///   operation is succeeded.
+    ONION_API auto listen(const InetAddress &address) noexcept -> SystemErrorCode;
+
+    /// \brief
+    ///   Accept a new incoming TCP connection. This method will block current thread until a new
+    ///   incoming connection is established or any error occurs.
+    /// \return
+    ///   A \c TcpStream object that represents the new accepted TCP connection.
+    /// \throws std::system_error
+    ///   Thrown if failed to accept new connection.
+    [[nodiscard]]
+    ONION_API auto accept() const -> TcpStream;
+
+    /// \brief
+    ///   Accept a new incoming TCP connection asynchronously. This method will suspend this
+    ///   coroutine until a new incoming connection is established or any error occurs.
+    /// \return
+    ///   A \c TcpStream object that represents the new accepted TCP connection.
+    /// \throws std::system_error
+    ///   Thrown if failed to accept new connection.
+    auto acceptAsync() const noexcept -> AcceptAwaitable {
+        return AcceptAwaitable{m_socket};
+    }
+
+    /// \brief
+    ///   Stop listening and release all resources. Closing a \c TcpListener object will cause
+    ///   errors for pending accept operations. This method does nothing if this is an empty
+    ///   \c TcpListener object.
+    ONION_API auto close() noexcept -> void;
+
+private:
+    detail::socket_t m_socket;
+    InetAddress m_address;
+};
+
 } // namespace onion
