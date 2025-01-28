@@ -88,7 +88,7 @@ private:
 struct [[nodiscard]] SystemIoResult {
     /// \brief
     ///   Error code of the system I/O operation.
-    SystemErrorCode error;
+    SystemErrorCode status;
 
     /// \brief
     ///   Size of the data transferred in bytes. This value is valid only if \c error is not an
