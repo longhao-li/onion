@@ -161,6 +161,14 @@ struct Overlapped {
     std::uint32_t bytes;
     PromiseBase *promise;
 };
+#elif defined(__linux) || defined(__linux__)
+/// \struct Overlapped
+/// \brief
+///   Overlapped structure for \c io_uring operations.
+struct Overlapped {
+    std::int32_t result;
+    PromiseBase *promise;
+};
 #endif
 
 /// \class SchedulerWorker
@@ -236,8 +244,18 @@ public:
     ///   For internal usage. Get IOCP of this worker.
     /// \return
     ///   IOCP handle of this worker.
+    [[nodiscard]]
     auto ioMultiplexer() const noexcept -> void * {
         return m_iocp;
+    }
+#elif defined(__linux) || defined(__linux__)
+    /// \brief
+    ///   For internal usage. Get \c io_uring of this worker.
+    /// \return
+    ///   Pointer to liburing \c io_uring struct of this worker.
+    [[nodiscard]]
+    auto ioMultiplexer() const noexcept -> void * {
+        return m_uring;
     }
 #endif
 
@@ -334,6 +352,18 @@ private:
     /// \brief
     ///   Timeout event queue for this worker.
     std::priority_queue<TimeoutEvent> m_timeouts;
+#elif defined(__linux) || defined(__linux__)
+    /// \brief
+    ///   Pointer to \c io_uring object.
+    void *m_uring;
+
+    /// \brief
+    ///   Event file descriptor that is used to wake up \c io_uring.
+    int m_wakeUp;
+
+    /// \brief
+    ///   Buffer for waking up \c io_uring.
+    std::uint64_t m_wakeUpBuffer;
 #endif
 
     /// \brief
@@ -558,6 +588,28 @@ public:
         if (count > 0) [[likely]]
             m_timeout = static_cast<std::uint32_t>(count);
     }
+#elif defined(__linux) || defined(__linux__)
+    /// \brief
+    ///   Create a new \c SleepAwaitable object to suspend current coroutine for a while.
+    /// \tparam Rep
+    ///   Representation for \c std::chrono::duration. See C++ reference for more details.
+    /// \tparam Period
+    ///   Period for \c std::chrono::duration. See C++ reference for more details.
+    /// \param duration
+    ///   Time to suspend current coroutine. Passing nevative or zero duration will not suspend
+    ///   current coroutine.
+    template <typename Rep, typename Period>
+    constexpr SleepAwaitable(std::chrono::duration<Rep, Period> duration) noexcept
+        : m_ovlp{},
+          m_timeout{} {
+        auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(duration);
+        auto count       = nanoseconds.count();
+
+        if (count > 0) [[likely]] {
+            m_timeout.tv_sec  = count / 1'000'000'000;
+            m_timeout.tv_nsec = count % 1'000'000'000;
+        }
+    }
 #endif
 
     /// \brief
@@ -588,6 +640,9 @@ public:
         auto *worker = detail::SchedulerWorker::threadWorker();
         worker->schedule(coroutine.promise(), m_timeout);
         return true;
+#elif defined(__linux) || defined(__linux__)
+        m_ovlp.promise = &coroutine.promise();
+        return this->await_suspend();
 #endif
     }
 
@@ -597,10 +652,28 @@ public:
     static constexpr auto await_resume() noexcept -> void {}
 
 private:
+#if defined(__linux) || defined(__linux__)
+    /// \brief
+    ///   For internal usage. Actual prepare for async timeout event.
+    ONION_API auto await_suspend() noexcept -> bool;
+#endif
+
+private:
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     /// \brief
     ///   Timeout in milliseconds.
     std::uint32_t m_timeout;
+#elif defined(__linux) || defined(__linux__)
+    /// \brief
+    ///   Overlapped structure for \c io_uring operations.
+    Overlapped m_ovlp;
+
+    /// \brief
+    ///   Timeout struct used for \c io_uring.
+    struct {
+        long long tv_sec;
+        long long tv_nsec;
+    } m_timeout;
 #endif
 };
 

@@ -14,6 +14,11 @@
 #    endif
 #    include <WinSock2.h>
 #    include <Windows.h>
+#elif defined(__linux) || defined(__linux__)
+#    include <liburing.h>
+#    include <sys/eventfd.h>
+#    include <sys/utsname.h>
+#    include <unistd.h>
 #endif
 
 using namespace onion;
@@ -483,6 +488,102 @@ auto SchedulerTaskQueue::advanceStealIndex(std::size_t current) noexcept -> bool
 ///   Worker for each thread.
 static thread_local SchedulerWorker *ThreadWorker;
 
+#if defined(__linux) || defined(__linux__)
+/// \brief
+///   Create an unsigned int that represents a version number.
+/// \param major
+///   Major linux kernel version number.
+/// \param minor
+///   Minor linux kernel version number.
+/// \param patch
+///   Patch linux kernel version number.
+[[nodiscard]]
+static auto makeVersion(std::uint8_t major, std::uint8_t minor, std::uint8_t patch) noexcept
+    -> std::uint32_t {
+    return (static_cast<std::uint32_t>(major) << 16) | (static_cast<std::uint32_t>(minor) << 8) |
+           patch;
+}
+
+/// \brief
+///   Get current linux kernel version. This is used to check if certain \c io_uring features are
+///   supported.
+/// \return
+///   An unsigned integer that represents current linux kernel version. This is created via function
+///   \c makeVersion.
+[[nodiscard]]
+static auto kernelVersion() noexcept -> std::uint32_t {
+    std::uint8_t versions[3]{};
+
+    struct utsname name;
+    if (::uname(&name) != 0)
+        return 0;
+
+    std::string_view s = name.release;
+    std::uint8_t *v    = versions;
+
+    for (char c : s) {
+        if (c >= '0' && c <= '9')
+            *v = *v * 10 + static_cast<std::uint8_t>(c) - '0';
+        else if (c == '.')
+            ++v;
+        else
+            break;
+
+        if (v >= versions + std::size(versions)) [[unlikely]]
+            break;
+    }
+
+    return makeVersion(versions[0], versions[1], versions[2]);
+}
+
+/// \brief
+///   Get available \c io_uring setup flags according to current kernel version.
+/// \return
+///   Available \c io_uring setup flags.
+[[nodiscard]]
+static auto ioUringSetupFlags() noexcept -> std::uint32_t {
+    std::uint32_t flags   = IORING_SETUP_CLAMP;
+    std::uint32_t version = kernelVersion();
+
+    if (version >= makeVersion(5, 18, 0))
+        flags |= IORING_SETUP_SUBMIT_ALL;
+
+    if (version >= makeVersion(5, 19, 0)) {
+        flags |= IORING_SETUP_COOP_TASKRUN;
+        flags |= IORING_SETUP_TASKRUN_FLAG;
+    }
+
+    if (version >= makeVersion(6, 0, 0))
+        flags |= IORING_SETUP_SINGLE_ISSUER;
+
+    return flags;
+}
+
+/// \brief
+///   Get available \c io_uring feature flags according to current kernel version.
+/// \return
+///   Available \c io_uring feature flags.
+[[nodiscard]]
+static auto ioUringSetupFeatures() noexcept -> std::uint32_t {
+    std::uint32_t features = 0;
+    std::uint32_t version  = kernelVersion();
+
+    if (version >= makeVersion(5, 4, 0))
+        features |= IORING_FEAT_SINGLE_MMAP;
+
+    if (version >= makeVersion(5, 5, 0))
+        features |= IORING_FEAT_NODROP;
+
+    if (version >= makeVersion(5, 6, 0))
+        features |= IORING_FEAT_RW_CUR_POS;
+
+    if (version >= makeVersion(5, 7, 0))
+        features |= IORING_FEAT_FAST_POLL;
+
+    return features;
+}
+#endif
+
 /// \brief
 ///   Try to bind current thread to the specified CPU core. This method does nothing if failed to
 ///   bind current thread to CPU thread.
@@ -503,6 +604,20 @@ static auto bindThreadToCpuCore(std::size_t id) noexcept -> void {
 
     id %= info.dwNumberOfProcessors;
     SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD>(1 << id));
+#elif defined(__linux) || defined(__linux__)
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    if (n <= 0) [[unlikely]]
+        return;
+
+    cpu_set_t mask;
+    CPU_ZERO(&mask);
+    if (n > CPU_SETSIZE)
+        n = CPU_SETSIZE;
+
+    id %= static_cast<std::size_t>(n);
+    CPU_SET(id, &mask);
+
+    sched_setaffinity(gettid(), sizeof(mask), &mask);
 #endif
 }
 
@@ -526,12 +641,61 @@ SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
     QueryPerformanceFrequency(&freq);
     m_frequency = freq.QuadPart / 1000;
 }
+#elif defined(__linux) || defined(__linux__)
+SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
+    : m_isRunning{},
+      m_shouldStop{},
+      m_scheduler{&scheduler},
+      m_index{index},
+      m_random{std::random_device{}()},
+      m_uring{},
+      m_wakeUp{-1},
+      m_wakeUpBuffer{},
+      m_taskQueue{16384},
+      m_localTasks{} {
+    // Create io_uring.
+    // We assume that we would never fail on allocating memory.
+    m_uring = std::malloc(sizeof(io_uring));
+    if (m_uring == nullptr) [[unlikely]]
+        std::terminate();
+
+    io_uring_params params{
+        .sq_entries     = 0,
+        .cq_entries     = 0,
+        .flags          = ioUringSetupFlags(),
+        .sq_thread_cpu  = 0,
+        .sq_thread_idle = 0,
+        .features       = ioUringSetupFeatures(),
+        .wq_fd          = 0,
+        .resv           = {},
+        .sq_off         = {},
+        .cq_off         = {},
+    };
+
+    auto *ring = static_cast<io_uring *>(m_uring);
+    int result = io_uring_queue_init_params(32768, ring, &params);
+    if (result != 0) [[unlikely]] {
+        std::free(ring);
+        throw std::system_error(-result, std::system_category(), "Failed to create io_uring");
+    }
+
+    // Create event file descriptor.
+    m_wakeUp = eventfd(0, EFD_CLOEXEC);
+    if (m_wakeUp < 0) [[unlikely]] {
+        int error = errno;
+        io_uring_queue_exit(ring);
+        std::free(ring);
+        throw std::system_error(error, std::system_category(), "Failed to create eventfd");
+    }
+}
 #endif
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
 SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
     : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
       m_shouldStop{other.m_shouldStop.load(std::memory_order_relaxed)},
+      m_scheduler{other.m_scheduler},
+      m_index{other.m_index},
       m_random{std::move(other.m_random)},
       m_iocp{other.m_iocp},
       m_frequency{other.m_frequency},
@@ -540,12 +704,36 @@ SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
       m_localTasks{std::move(other.m_localTasks)} {
     other.m_iocp = nullptr;
 }
+#elif defined(__linux) || defined(__linux__)
+SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
+    : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
+      m_shouldStop{other.m_shouldStop.load(std::memory_order_relaxed)},
+      m_scheduler{other.m_scheduler},
+      m_index{other.m_index},
+      m_random{std::move(other.m_random)},
+      m_uring{other.m_uring},
+      m_wakeUp{other.m_wakeUp},
+      m_wakeUpBuffer{},
+      m_taskQueue{std::move(other.m_taskQueue)},
+      m_localTasks{std::move(other.m_localTasks)} {
+    other.m_uring  = nullptr;
+    other.m_wakeUp = -1;
+}
 #endif
 
 SchedulerWorker::~SchedulerWorker() noexcept {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     if (m_iocp != nullptr)
         CloseHandle(m_iocp);
+#elif defined(__linux) || defined(__linux__)
+    if (m_uring != nullptr) {
+        auto *ring = static_cast<io_uring *>(m_uring);
+        io_uring_queue_exit(ring);
+        std::free(ring);
+    }
+
+    if (m_wakeUp >= 0)
+        close(m_wakeUp);
 #endif
 }
 
@@ -606,8 +794,9 @@ auto SchedulerWorker::start() noexcept -> void {
 
         if (!m_localTasks.empty()) {
             shouldSteal = false;
-            for (const auto &task : m_localTasks)
-                runTask(task);
+            // Avoid iterator invalidation.
+            for (std::size_t i = 0; i < m_localTasks.size(); ++i) // NOLINT
+                runTask(m_localTasks[i]);
 
             m_localTasks.clear();
         }
@@ -628,7 +817,7 @@ auto SchedulerWorker::start() noexcept -> void {
     // Handle tasks once before entering the event loop.
     handleTasks();
 
-    while (!m_shouldStop.load(std::memory_order_relaxed)) {
+    while (!m_shouldStop.load(std::memory_order_relaxed)) [[likely]] {
         // Wait for at most 1 second.
         timeout = 1000;
 
@@ -674,6 +863,52 @@ auto SchedulerWorker::start() noexcept -> void {
 
         handleTasks();
     }
+#elif defined(__linux) || defined(__linux__)
+    auto *const ring  = static_cast<io_uring *>(m_uring);
+    io_uring_cqe *cqe = nullptr;
+    __kernel_timespec timeout{};
+
+    // Prepare for wake up event. Older versions of linux kernel does not support multishot read. We
+    // would manually simulate it.
+    const auto prepareWakeup = [this, ring]() -> void {
+        io_uring_sqe *sqe = io_uring_get_sqe(ring);
+        while (sqe == nullptr) [[unlikely]] {
+            io_uring_submit(ring);
+            sqe = io_uring_get_sqe(ring);
+        }
+
+        io_uring_prep_read(sqe, m_wakeUp, &m_wakeUpBuffer, sizeof(m_wakeUpBuffer), 0);
+        io_uring_sqe_set_data(sqe, nullptr);
+        io_uring_submit(ring);
+    };
+
+    // Handle tasks once before entering the event loop.
+    handleTasks();
+
+    while (!m_shouldStop.load(std::memory_order_relaxed)) [[likely]] {
+        // Wait for at most 1 second.
+        timeout.tv_sec  = 1;
+        timeout.tv_nsec = 0;
+
+        int result = io_uring_wait_cqe_timeout(ring, &cqe, &timeout);
+        while (result == 0) {
+            auto *ovlp = static_cast<Overlapped *>(io_uring_cqe_get_data(cqe));
+
+            // This is a wake up event.
+            if (ovlp == nullptr) {
+                prepareWakeup();
+            } else {
+                ovlp->result = cqe->res;
+                this->schedule(*ovlp->promise);
+            }
+
+            io_uring_cq_advance(ring, 1);
+            result = io_uring_peek_cqe(ring, &cqe);
+        }
+
+        // Handle tasks.
+        handleTasks();
+    }
 #endif
 
     // Unset thread worker.
@@ -692,6 +927,9 @@ auto SchedulerWorker::stop() noexcept -> void {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     // Wake up IOCP.
     PostQueuedCompletionStatus(m_iocp, 0, 0, nullptr);
+#elif defined(__linux) || defined(__linux__)
+    // Wake up io_uring.
+    eventfd_write(m_wakeUp, 1);
 #endif
 }
 
@@ -777,3 +1015,27 @@ auto Scheduler::stop() noexcept -> void {
     for (auto &worker : m_workers)
         worker.stop();
 }
+
+#if defined(__linux) || defined(__linux__)
+auto SleepAwaitable::await_suspend() noexcept -> bool {
+    // No need to sleep.
+    if (m_timeout.tv_sec == 0 && m_timeout.tv_nsec == 0) [[unlikely]]
+        return false;
+
+    auto *worker = SchedulerWorker::threadWorker();
+    auto *ring   = static_cast<io_uring *>(worker->ioMultiplexer());
+
+    io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        io_uring_submit(ring);
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    io_uring_prep_timeout(sqe, reinterpret_cast<__kernel_timespec *>(&m_timeout), 1, 0);
+    io_uring_sqe_set_flags(sqe, 0);
+    io_uring_sqe_set_data(sqe, &m_ovlp);
+
+    io_uring_submit(ring);
+    return true;
+}
+#endif

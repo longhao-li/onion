@@ -94,6 +94,11 @@ enum class SocketAddressFamily : std::uint16_t {
     Unix        = 1,
     Internet    = 2,
     Internet6   = 23,
+#elif defined(__linux) || defined(__linux__)
+    Unspecified = 0,
+    Unix        = 1,
+    Internet    = 2,
+    Internet6   = 10,
 #endif
 };
 

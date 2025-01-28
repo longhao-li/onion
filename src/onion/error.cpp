@@ -11,6 +11,7 @@
 #endif
 
 #include <array>
+#include <cstring>
 
 using namespace onion;
 
@@ -24,5 +25,7 @@ auto SystemErrorCode::message() const noexcept -> std::string {
                        buffer.data(), static_cast<DWORD>(buffer.size()), nullptr);
 
     return {buffer.begin(), buffer.begin() + length};
+#else
+    return std::strerror(m_code);
 #endif
 }

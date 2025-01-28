@@ -96,27 +96,25 @@ else()
     )
 
     # Export liburing.
-    if(ONION_IS_ROOT_PROJECT)
-        include(GNUInstallDirs)
+    include(GNUInstallDirs)
 
-        install(
-            TARGETS     uring
-            EXPORT      uring-targets
-            LIBRARY     DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            ARCHIVE     DESTINATION ${CMAKE_INSTALL_LIBDIR}
-            INCLUDES    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-        )
+    install(
+        TARGETS     uring
+        EXPORT      uring-targets
+        LIBRARY     DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE     DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        INCLUDES    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
 
-        install(
-            EXPORT      uring-targets
-            FILE        uring-targets.cmake
-            NAMESPACE   uring::
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/uring
-        )
+    install(
+        EXPORT      uring-targets
+        FILE        uring-targets.cmake
+        NAMESPACE   uring::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/uring
+    )
 
-        install(
-            DIRECTORY   ${liburing_SOURCE_DIR}/src/include
-            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-        )
-    endif()
+    install(
+        DIRECTORY   ${liburing_SOURCE_DIR}/src/include
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
 endif()

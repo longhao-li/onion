@@ -7,20 +7,13 @@ if("${CMAKE_SOURCE_DIR}" STREQUAL "${CMAKE_BINARY_DIR}")
     message(FATAL_ERROR "In-source build is not allowed.")
 endif()
 
-# Checks if onion is built as a subproject.
-if(PROJECT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
-    set(ONION_IS_ROOT_PROJECT ON)
-else()
-    set(ONION_IS_ROOT_PROJECT OFF)
-endif()
-
 # CMake build options.
 option(ONION_BUILD_SHARED_LIBS "Build onion as shared library." OFF)
 option(ONION_WARNINGS_AS_ERRORS "Treat warnings as errors." ON)
 option(ONION_ENABLE_LTO "Enable link-time optimization for onion shared library." OFF)
 option(ONION_ENABLE_ASAN "Enable address sanitizer for onion. Cannot be enabled with LTO" OFF)
-option(ONION_BUILD_TESTS "Build onion tests." ${ONION_IS_ROOT_PROJECT})
-option(ONION_BUILD_EXAMPLES "Build onion examples." ${ONION_IS_ROOT_PROJECT})
+option(ONION_BUILD_TESTS "Build onion tests." OFF)
+option(ONION_BUILD_EXAMPLES "Build onion examples." OFF)
 
 # Build onion library.
 file(GLOB_RECURSE ONION_HEADER_FILES "include/*.hpp")
@@ -127,10 +120,9 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Linux")
 endif()
 
 # Add install target if this is the root project.
-if(ONION_IS_ROOT_PROJECT)
-    include(GNUInstallDirs)
+include(GNUInstallDirs)
 
-    install(
+install(
     TARGETS     onion
     EXPORT      onion-targets
     RUNTIME     DESTINATION ${CMAKE_INSTALL_BINDIR}
@@ -148,27 +140,26 @@ install(
 
 # Generate the package configuration file.
 include(CMakePackageConfigHelpers)
-    configure_package_config_file(
-        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/onion-config.cmake.in
-        ${CMAKE_CURRENT_BINARY_DIR}/onion-config.cmake
-        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/onion
-    )
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/onion-config.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/onion-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/onion
+)
 
-    write_basic_package_version_file(
-        onion-config-version.cmake
-        VERSION ${PACKAGE_VERSION}
-        COMPATIBILITY SameMajorVersion
-    )
+write_basic_package_version_file(
+    onion-config-version.cmake
+    VERSION ${PACKAGE_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
 
-    install(
-        FILES       ${CMAKE_CURRENT_BINARY_DIR}/onion-config.cmake
-                    ${CMAKE_CURRENT_BINARY_DIR}/onion-config-version.cmake
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/onion
-    )
+install(
+    FILES       ${CMAKE_CURRENT_BINARY_DIR}/onion-config.cmake
+                ${CMAKE_CURRENT_BINARY_DIR}/onion-config-version.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/onion
+)
 
-    # Install the header files.
-    install(
-        DIRECTORY   ${CMAKE_CURRENT_SOURCE_DIR}/include/onion
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
-endif()
+# Install the header files.
+install(
+    DIRECTORY   ${CMAKE_CURRENT_SOURCE_DIR}/include/onion
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)

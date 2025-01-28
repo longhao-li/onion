@@ -6,6 +6,8 @@
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
 #    include <WS2tcpip.h>
+#elif defined(__linux) || defined(__linux__)
+#    include <arpa/inet.h>
 #endif
 
 using namespace onion;
