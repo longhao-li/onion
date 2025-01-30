@@ -215,7 +215,7 @@ public:
         ///   this object will suspend current coroutine and switch to the given coroutine.
         /// \param coroutine
         ///   Coroutine handle of the coroutine to be executed. This coroutine should not be null.
-        explicit TaskAwaitable(std::coroutine_handle<T> coroutine) noexcept
+        explicit TaskAwaitable(std::coroutine_handle<promise_type> coroutine) noexcept
             : m_coroutine{coroutine} {}
 
         /// \brief
@@ -346,6 +346,24 @@ public:
     template <typename T>
     auto await_transform(const Task<T> &task) const noexcept -> TaskAwaitable<T> {
         return TaskAwaitable<T>{task.coroutine()};
+    }
+
+    /// \brief
+    ///   C++20 coroutine API. Suspend current coroutine and execute the given awaitable object.
+    /// \tparam T
+    ///   Type of the awaitable object.
+    /// \param awaitable
+    ///   Awaitable object to be executed.
+    /// \return
+    ///   The given awaitable object.
+    template <typename T>
+        requires requires(T awaitable, std::coroutine_handle<> coroutine) {
+            { awaitable.await_ready() } -> std::same_as<bool>;
+            { awaitable.await_suspend(coroutine) };
+            { awaitable.await_resume() };
+        }
+    auto await_transform(T &&awaitable) const noexcept -> decltype(auto) {
+        return std::forward<T>(awaitable);
     }
 
 protected:

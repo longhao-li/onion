@@ -27,7 +27,7 @@ if(ONION_BUILD_SHARED_LIBS)
         target_compile_definitions(onion PRIVATE "ONION_API=__declspec(dllexport)")
         target_compile_definitions(onion INTERFACE "ONION_API=__declspec(dllimport)")
     else()
-        target_compile_definitions(onion PRIVATE "ONION_API=__attribute__((visibility(\"default\")))")
+        target_compile_definitions(onion PUBLIC "ONION_API=__attribute__((visibility(\"default\")))")
     endif()
 
     # Hide symbols and use position independent code.
@@ -84,7 +84,7 @@ if(MSVC)
         check_cxx_compiler_flag(/fsanitize=address ONION_CXX_HAS_ASAN)
         if(ONION_CXX_HAS_ASAN)
             target_compile_options(onion PRIVATE /fsanitize=address)
-            target_link_options(onion PRIVATE /fsanitize=address)
+            target_link_libraries(onion PRIVATE /fsanitize=address)
         else()
             message(WARNING "Address sanitizer is enabled but not supported.")
         endif()
@@ -99,13 +99,8 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
 
     # Enable address sanitizer.
     if(ONION_ENABLE_ASAN)
-        check_cxx_compiler_flag(-fsanitize=address ONION_CXX_HAS_ASAN)
-        if(ONION_CXX_HAS_ASAN)
-            target_compile_options(onion PRIVATE -fsanitize=address)
-            target_link_options(onion PRIVATE -fsanitize=address)
-        else()
-            message(WARNING "Address sanitizer is enabled but not supported.")
-        endif()
+        target_compile_options(onion PRIVATE -fsanitize=address)
+        target_link_libraries(onion PRIVATE -fsanitize=address)
     endif()
 endif()
 
@@ -163,3 +158,22 @@ install(
     DIRECTORY   ${CMAKE_CURRENT_SOURCE_DIR}/include/onion
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
+
+# Build tests.
+if(ONION_BUILD_TESTS)
+    # Enable testing support in CMake.
+    include(CTest)
+    include(cmake/doctest.cmake)
+
+    # Build the test executable.
+    file(GLOB_RECURSE ONION_TEST_SOURCE_FILES "tests/*.cpp")
+    add_executable(onion-test ${ONION_TEST_SOURCE_FILES})
+
+    target_link_libraries(onion-test PRIVATE onion doctest::doctest)
+    if(ONION_ENABLE_ASAN)
+        target_link_libraries(onion-test PRIVATE -fsanitize=address)
+        target_link_libraries(onion-test PRIVATE -fsanitize=address)
+    endif()
+
+    doctest_discover_tests(onion-test)
+endif()

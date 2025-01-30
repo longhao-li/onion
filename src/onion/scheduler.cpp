@@ -644,7 +644,6 @@ SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
 #elif defined(__linux) || defined(__linux__)
 SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
     : m_isRunning{},
-      m_shouldStop{},
       m_scheduler{&scheduler},
       m_index{index},
       m_random{std::random_device{}()},
@@ -707,7 +706,6 @@ SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
 #elif defined(__linux) || defined(__linux__)
 SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
     : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
-      m_shouldStop{other.m_shouldStop.load(std::memory_order_relaxed)},
       m_scheduler{other.m_scheduler},
       m_index{other.m_index},
       m_random{std::move(other.m_random)},
@@ -741,9 +739,6 @@ auto SchedulerWorker::start() noexcept -> void {
     // This method could only be called once at the same time.
     if (m_isRunning.exchange(true, std::memory_order_relaxed)) [[unlikely]]
         std::terminate();
-
-    // Clear stop flag.
-    m_shouldStop.store(false, std::memory_order_relaxed);
 
     // Set thread worker.
     ThreadWorker = this;
@@ -805,6 +800,8 @@ auto SchedulerWorker::start() noexcept -> void {
             stealTasks();
     };
 
+    bool shouldStop = false;
+
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     DWORD bytes;
     ULONG_PTR key;
@@ -817,7 +814,7 @@ auto SchedulerWorker::start() noexcept -> void {
     // Handle tasks once before entering the event loop.
     handleTasks();
 
-    while (!m_shouldStop.load(std::memory_order_relaxed)) [[likely]] {
+    while (!shouldStop) [[likely]] {
         // Wait for at most 1 second.
         timeout = 1000;
 
@@ -849,6 +846,8 @@ auto SchedulerWorker::start() noexcept -> void {
                 o->bytes = bytes;
 
                 this->schedule(*o->promise);
+            } else {
+                shouldStop = true;
             }
 
             result = GetQueuedCompletionStatus(m_iocp, &bytes, &key, &ovlp, 0);
@@ -884,8 +883,8 @@ auto SchedulerWorker::start() noexcept -> void {
 
     // Handle tasks once before entering the event loop.
     handleTasks();
-
-    while (!m_shouldStop.load(std::memory_order_relaxed)) [[likely]] {
+    prepareWakeup();
+    while (!shouldStop) [[likely]] {
         // Wait for at most 1 second.
         timeout.tv_sec  = 1;
         timeout.tv_nsec = 0;
@@ -894,12 +893,12 @@ auto SchedulerWorker::start() noexcept -> void {
         while (result == 0) {
             auto *ovlp = static_cast<Overlapped *>(io_uring_cqe_get_data(cqe));
 
-            // This is a wake up event.
-            if (ovlp == nullptr) {
-                prepareWakeup();
-            } else {
+            // Ignore wake up event.
+            if (ovlp != nullptr) {
                 ovlp->result = cqe->res;
                 this->schedule(*ovlp->promise);
+            } else {
+                shouldStop = true;
             }
 
             io_uring_cq_advance(ring, 1);
@@ -919,11 +918,6 @@ auto SchedulerWorker::start() noexcept -> void {
 }
 
 auto SchedulerWorker::stop() noexcept -> void {
-    if (!m_isRunning.load(std::memory_order_acquire))
-        return;
-
-    m_shouldStop.store(true, std::memory_order_release);
-
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     // Wake up IOCP.
     PostQueuedCompletionStatus(m_iocp, 0, 0, nullptr);
@@ -1014,6 +1008,30 @@ auto Scheduler::start() noexcept -> void {
 auto Scheduler::stop() noexcept -> void {
     for (auto &worker : m_workers)
         worker.stop();
+}
+
+auto YieldAwaitable::await_suspend() noexcept -> void {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    auto *worker = SchedulerWorker::threadWorker();
+    auto *iocp   = worker->iocp();
+
+    PostQueuedCompletionStatus(iocp, 0, 0, reinterpret_cast<LPOVERLAPPED>(&m_ovlp));
+#elif defined(__linux) || defined(__linux__)
+    auto *worker = SchedulerWorker::threadWorker();
+    auto *ring   = static_cast<io_uring *>(worker->ioMultiplexer());
+
+    io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        io_uring_submit(ring);
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    io_uring_prep_nop(sqe);
+    io_uring_sqe_set_flags(sqe, 0);
+    io_uring_sqe_set_data(sqe, &m_ovlp);
+
+    io_uring_submit(ring);
+#endif
 }
 
 #if defined(__linux) || defined(__linux__)

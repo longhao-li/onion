@@ -278,15 +278,6 @@ private:
             m_localTasks.push_back(&promise);
     }
 
-    /// \brief
-    ///   Suspend the specified task in this worker. This method is not concurrent safe and could
-    ///   only be called in owner thread.
-    /// \param[in] promise
-    ///   Promise of the task to be suspended.
-    auto suspend(PromiseBase &promise) noexcept -> void {
-        m_taskQueue.tryPush(&promise);
-    }
-
     friend class YieldAwaitable;
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
@@ -322,10 +313,6 @@ private:
     /// \brief
     ///   A flag that indicates whether this worker is running.
     std::atomic_bool m_isRunning;
-
-    /// \brief
-    ///   A flag that indicates whether this worker should stop.
-    std::atomic_bool m_shouldStop;
 
     /// \brief
     ///   Owner scheduler of this worker. Not null.
@@ -539,6 +526,10 @@ namespace detail {
 class [[nodiscard]] YieldAwaitable {
 public:
     /// \brief
+    ///   Create a new \c YieldAwaitable object to yield current coroutine.
+    constexpr YieldAwaitable() noexcept : m_ovlp{} {}
+
+    /// \brief
     ///   C++20 coroutine API method. Always execute \c await_suspend().
     /// \return
     ///   This method always returns \c false.
@@ -554,15 +545,24 @@ public:
     /// \param coroutine
     ///   Current coroutine handle.
     template <typename T>
-    static auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> void {
-        auto *worker = detail::SchedulerWorker::threadWorker();
-        worker->suspend(coroutine.promise());
+    auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> void {
+        m_ovlp.promise = &coroutine.promise();
+        this->await_suspend();
     }
 
     /// \brief
     ///   C++20 coroutine API. Resume current coroutine and get the async operation result. Do
     ///   nothing.
     static constexpr auto await_resume() noexcept -> void {}
+
+private:
+    /// \brief
+    ///   For internal usage. Yield current coroutine so that the scheduler can schedule another
+    ///   coroutine immediately.
+    ONION_API auto await_suspend() noexcept -> void;
+
+private:
+    Overlapped m_ovlp;
 };
 
 /// \class SleepAwaitable
