@@ -651,6 +651,10 @@ auto TcpListener::AcceptAwaitable::await_resume() const noexcept
     }
 
     return std::expected<TcpStream, SystemErrorCode>{std::in_place, m_connection, m_address};
+#elif defined(__linux) || defined(__linux__)
+    if (m_ovlp.result < 0) [[unlikely]]
+        return std::unexpected<SystemErrorCode>{-m_ovlp.result};
+    return std::expected<TcpStream, SystemErrorCode>{std::in_place, m_ovlp.result, m_address};
 #endif
 }
 
@@ -692,6 +696,30 @@ auto TcpListener::AcceptAwaitable::await_suspend() noexcept -> bool {
 
     m_ovlp.error = static_cast<std::uint32_t>(error);
     return false;
+#elif defined(__linux) || defined(__linux__)
+    auto *worker = SchedulerWorker::threadWorker();
+
+    auto *ring        = static_cast<io_uring *>(worker->ioMultiplexer());
+    io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        int result = io_uring_submit(ring);
+        if (result < 0) [[unlikely]] {
+            m_ovlp.result = result;
+            return false;
+        }
+
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    auto *addr    = reinterpret_cast<sockaddr *>(&m_address);
+    auto *addrlen = &m_addrlen;
+
+    io_uring_prep_accept(sqe, m_server, addr, addrlen, SOCK_CLOEXEC);
+    io_uring_sqe_set_flags(sqe, 0);
+    io_uring_sqe_set_data(sqe, &m_ovlp);
+
+    io_uring_submit(ring);
+    return true;
 #endif
 }
 
@@ -761,6 +789,51 @@ auto TcpListener::listen(const InetAddress &address) noexcept -> SystemErrorCode
     m_address = address;
 
     return {};
+#elif defined(__linux) || defined(__linux__)
+    // Create a new socket for the server.
+    auto *addr        = reinterpret_cast<const sockaddr *>(&address);
+    socklen_t addrlen = (addr->sa_family == AF_INET) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+    int s             = ::socket(addr->sa_family, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+
+    if (s == -1) [[unlikely]]
+        return errno;
+
+    // Enable SO_REUSEADDR option.
+    int value = 1;
+    if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return error;
+    }
+
+    // Enable SO_REUSEPORT option.
+    value = 1;
+    if (setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &value, sizeof(value)) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return error;
+    }
+
+    // Bind the socket to the specified address.
+    if (::bind(s, addr, addrlen) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return error;
+    }
+
+    // Start listening on the socket.
+    if (::listen(s, SOMAXCONN) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return error;
+    }
+
+    this->close();
+
+    m_socket  = s;
+    m_address = address;
+
+    return {};
 #endif
 }
 
@@ -774,6 +847,15 @@ auto TcpListener::accept() const noexcept -> std::expected<TcpStream, SystemErro
         return std::unexpected<SystemErrorCode>{static_cast<int>(WSAGetLastError())};
 
     return std::expected<TcpStream, SystemErrorCode>{std::in_place, s, address};
+#elif defined(__linux) || defined(__linux__)
+    InetAddress address{};
+    socklen_t addrlen = sizeof(address);
+
+    int s = ::accept4(m_socket, reinterpret_cast<sockaddr *>(&address), &addrlen, SOCK_CLOEXEC);
+    if (s == -1) [[unlikely]]
+        return std::unexpected<SystemErrorCode>{errno};
+
+    return std::expected<TcpStream, SystemErrorCode>{std::in_place, s, address};
 #endif
 }
 
@@ -782,6 +864,11 @@ auto TcpListener::close() noexcept -> void {
     if (m_socket != INVALID_SOCKET) {
         closesocket(m_socket);
         m_socket = INVALID_SOCKET;
+    }
+#elif defined(__linux) || defined(__linux__)
+    if (m_socket != InvalidSocket) {
+        ::close(m_socket);
+        m_socket = InvalidSocket;
     }
 #endif
 }

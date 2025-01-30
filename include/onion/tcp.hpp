@@ -469,6 +469,7 @@ public:
     ///   Awaitable object for asynchronous connection acceptance.
     class [[nodiscard]] AcceptAwaitable {
     public:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
         /// \brief
         ///   Create a new \c AcceptAwaitable object for asynchronous connection acceptance.
         /// \param listener
@@ -478,6 +479,17 @@ public:
               m_server{listener},
               m_connection{detail::InvalidSocket},
               m_address{} {}
+#elif defined(__linux) || defined(__linux__)
+        /// \brief
+        ///   Create a new \c AcceptAwaitable object for asynchronous connection acceptance.
+        /// \param listener
+        ///   The TCP listener socket to accept new connection.
+        explicit AcceptAwaitable(detail::socket_t listener) noexcept
+            : m_ovlp{},
+              m_server{listener},
+              m_addrlen{},
+              m_address{} {}
+#endif
 
         /// \brief
         ///   C++20 coroutine API method. Always execute \c await_suspend().
@@ -532,6 +544,11 @@ public:
 
         [[maybe_unused]]
         std::byte m_padding[16];
+#elif defined(__linux) || defined(__linux__)
+        detail::Overlapped m_ovlp;
+        detail::socket_t m_server;
+        unsigned int m_addrlen;
+        InetAddress m_address;
 #endif
     };
 
