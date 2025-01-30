@@ -119,7 +119,10 @@ TEST_CASE("[IpAddress] IPv4 loopback address") {
     CHECK(!addr.isIpv4MappedIpv6());
 
     CHECK(addr.toIpv4() == addr);
-    CHECK(addr.toIpv6() == IpAddress("::FFFF:7F00:0001"));
+
+    IpAddress addr2("::FFFF:7F00:0001");
+    IpAddress v6 = addr.toIpv6();
+    CHECK(v6 == addr2);
 
     CHECK(!IpAddress(128, 0, 0, 1).isIpv4Loopback());
     CHECK(!IpAddress(127, 1, 0, 1).isIpv4Loopback());

@@ -304,7 +304,7 @@ private:
     ///   Pointer to the promise of the task to be scheduled.
     /// \param timeout
     ///   Timeout in milliseconds.
-    auto schedule(PromiseBase &promise, std::uint32_t timeout) noexcept -> void;
+    ONION_API auto schedule(PromiseBase &promise, std::uint32_t timeout) noexcept -> void;
 
     friend class SleepAwaitable;
 #endif

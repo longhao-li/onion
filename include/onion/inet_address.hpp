@@ -279,7 +279,13 @@ public:
             return *this;
 
         IpAddress addr;
-        addr.m_isIpv6         = true;
+        addr.m_isIpv6 = true;
+
+        addr.m_addr.v6.u16[0] = 0;
+        addr.m_addr.v6.u16[1] = 0;
+        addr.m_addr.v6.u16[2] = 0;
+        addr.m_addr.v6.u16[3] = 0;
+        addr.m_addr.v6.u16[4] = 0;
         addr.m_addr.v6.u16[5] = 0xFFFF;
         addr.m_addr.v6.u16[6] = m_addr.v4.u16[0];
         addr.m_addr.v6.u16[7] = m_addr.v4.u16[1];

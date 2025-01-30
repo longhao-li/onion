@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <mutex>
 #include <set>
 
 using namespace onion;

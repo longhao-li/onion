@@ -624,7 +624,6 @@ static auto bindThreadToCpuCore(std::size_t id) noexcept -> void {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
 SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
     : m_isRunning{},
-      m_shouldStop{},
       m_scheduler{&scheduler},
       m_index{index},
       m_random{std::random_device{}()},
@@ -692,7 +691,6 @@ SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
 SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
     : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
-      m_shouldStop{other.m_shouldStop.load(std::memory_order_relaxed)},
       m_scheduler{other.m_scheduler},
       m_index{other.m_index},
       m_random{std::move(other.m_random)},
@@ -1013,7 +1011,7 @@ auto Scheduler::stop() noexcept -> void {
 auto YieldAwaitable::await_suspend() noexcept -> void {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     auto *worker = SchedulerWorker::threadWorker();
-    auto *iocp   = worker->iocp();
+    auto *iocp   = worker->ioMultiplexer();
 
     PostQueuedCompletionStatus(iocp, 0, 0, reinterpret_cast<LPOVERLAPPED>(&m_ovlp));
 #elif defined(__linux) || defined(__linux__)
