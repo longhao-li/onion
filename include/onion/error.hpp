@@ -82,18 +82,4 @@ private:
     std::int32_t m_code;
 };
 
-/// \struct SystemIoResult
-/// \brief
-///   Result of a system I/O operation.
-struct [[nodiscard]] SystemIoResult {
-    /// \brief
-    ///   Error code of the system I/O operation.
-    SystemErrorCode status;
-
-    /// \brief
-    ///   Size of the data transferred in bytes. This value is valid only if \c error is not an
-    ///   error.
-    std::uint32_t size;
-};
-
 } // namespace onion

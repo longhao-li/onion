@@ -58,8 +58,8 @@ endif()
 # Alias target to be consistent with the project name.
 add_library(onion::onion ALIAS onion)
 
-# We need C++20 for coroutine support.
-target_compile_features(onion PUBLIC cxx_std_20)
+# We need C++20 for coroutine support and C++23 for std::expected.
+target_compile_features(onion PUBLIC cxx_std_23)
 
 # Include directories.
 target_include_directories(

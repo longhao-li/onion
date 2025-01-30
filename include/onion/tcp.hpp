@@ -4,6 +4,8 @@
 #include "inet_address.hpp"
 #include "scheduler.hpp"
 
+#include <expected>
+
 namespace onion {
 
 /// \class TcpStream
@@ -128,16 +130,15 @@ public:
         ///   Number of bytes sent if succeeded. Otherwise, return a system error code that
         ///   represents the IO error.
         [[nodiscard]]
-        auto await_resume() const noexcept -> SystemIoResult {
+        auto await_resume() const noexcept -> std::expected<std::uint32_t, SystemErrorCode> {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-            return {
-                .status = static_cast<std::int32_t>(m_ovlp.error),
-                .size   = m_ovlp.bytes,
-            };
+            if (m_ovlp.error == 0) [[likely]]
+                return m_ovlp.bytes;
+            return std::unexpected<SystemErrorCode>{static_cast<int>(m_ovlp.error)};
 #elif defined(__linux) || defined(__linux__)
             if (m_ovlp.result >= 0) [[likely]]
-                return {.status = {}, .size = static_cast<std::uint32_t>(m_ovlp.result)};
-            return {.status = -m_ovlp.result, .size = 0};
+                return static_cast<std::uint32_t>(m_ovlp.result);
+            return std::unexpected<SystemErrorCode>{-m_ovlp.result};
 #endif
         }
 
@@ -208,16 +209,15 @@ public:
         ///   Number of bytes received if succeeded. Otherwise, return a system error code that
         ///   represents the IO error.
         [[nodiscard]]
-        auto await_resume() const noexcept -> SystemIoResult {
+        auto await_resume() const noexcept -> std::expected<std::uint32_t, SystemErrorCode> {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-            return {
-                .status = static_cast<std::int32_t>(m_ovlp.error),
-                .size   = m_ovlp.bytes,
-            };
+            if (m_ovlp.error == 0) [[likely]]
+                return m_ovlp.bytes;
+            return std::unexpected<SystemErrorCode>{static_cast<int>(m_ovlp.error)};
 #elif defined(__linux) || defined(__linux__)
             if (m_ovlp.result >= 0) [[likely]]
-                return {.status = {}, .size = static_cast<std::uint32_t>(m_ovlp.result)};
-            return {.status = -m_ovlp.result, .size = 0};
+                return static_cast<std::uint32_t>(m_ovlp.result);
+            return std::unexpected<SystemErrorCode>{-m_ovlp.result};
 #endif
         }
 
@@ -331,7 +331,8 @@ public:
     /// \return
     ///   Number of bytes sent if succeeded. Otherwise, return a system error code that represents
     ///   the IO error.
-    ONION_API auto send(const void *data, std::uint32_t size) noexcept -> SystemIoResult;
+    ONION_API auto send(const void *data, std::uint32_t size) noexcept
+        -> std::expected<std::uint32_t, SystemErrorCode>;
 
     /// \brief
     ///   Send data to the peer TCP endpoint asynchronously. This method will suspend this coroutine
@@ -357,7 +358,8 @@ public:
     /// \return
     ///   Number of bytes received if succeeded. Otherwise, return a system error code that
     ///   represents the IO error.
-    ONION_API auto receive(void *buffer, std::uint32_t size) noexcept -> SystemIoResult;
+    ONION_API auto receive(void *buffer, std::uint32_t size) noexcept
+        -> std::expected<std::uint32_t, SystemErrorCode>;
 
     /// \brief
     ///   Receive data from the peer TCP endpoint asynchronously. This method will suspend this
@@ -505,11 +507,10 @@ public:
         /// \brief
         ///   Get the result of the asynchronous accept operation.
         /// \return
-        ///   A \c TcpStream object that represents the new accepted TCP connection.
-        /// \throws std::system_error
-        ///   Thrown if failed to accept new connection.
+        ///   A \c TcpStream object that represents the new accepted TCP connection. Otherwise,
+        ///   return a system error code that represents the IO error.
         [[nodiscard]]
-        ONION_API auto await_resume() const -> TcpStream;
+        ONION_API auto await_resume() const noexcept -> std::expected<TcpStream, SystemErrorCode>;
 
     private:
         /// \brief
@@ -594,11 +595,10 @@ public:
     ///   Accept a new incoming TCP connection. This method will block current thread until a new
     ///   incoming connection is established or any error occurs.
     /// \return
-    ///   A \c TcpStream object that represents the new accepted TCP connection.
-    /// \throws std::system_error
-    ///   Thrown if failed to accept new connection.
+    ///   A \c TcpStream object that represents the new accepted TCP connection. Otherwise, return a
+    ///   system error code that represents the IO error.
     [[nodiscard]]
-    ONION_API auto accept() const -> TcpStream;
+    ONION_API auto accept() const noexcept -> std::expected<TcpStream, SystemErrorCode>;
 
     /// \brief
     ///   Accept a new incoming TCP connection asynchronously. This method will suspend this

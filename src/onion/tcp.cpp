@@ -522,7 +522,8 @@ auto TcpStream::connect(const InetAddress &address) noexcept -> SystemErrorCode 
 #endif
 }
 
-auto TcpStream::send(const void *data, std::uint32_t size) noexcept -> SystemIoResult {
+auto TcpStream::send(const void *data, std::uint32_t size) noexcept
+    -> std::expected<std::uint32_t, SystemErrorCode> {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     DWORD bytes = 0;
     WSABUF buffer{
@@ -530,17 +531,19 @@ auto TcpStream::send(const void *data, std::uint32_t size) noexcept -> SystemIoR
         .buf = static_cast<char *>(const_cast<void *>(data)),
     };
 
-    std::ignore = WSASend(m_socket, &buffer, 1, &bytes, 0, nullptr, nullptr);
-    return {.status = WSAGetLastError(), .size = bytes};
+    if (WSASend(m_socket, &buffer, 1, &bytes, 0, nullptr, nullptr) == TRUE) [[likely]]
+        return bytes;
+    return std::unexpected<SystemErrorCode>{WSAGetLastError()};
 #elif defined(__linux) || defined(__linux__)
     ssize_t result = ::send(m_socket, data, size, MSG_NOSIGNAL);
     if (result >= 0) [[likely]]
-        return {.status = {}, .size = static_cast<std::uint32_t>(result)};
-    return {.status = errno, .size = 0};
+        return static_cast<std::uint32_t>(result);
+    return std::unexpected<SystemErrorCode>{errno};
 #endif
 }
 
-auto TcpStream::receive(void *buffer, std::uint32_t size) noexcept -> SystemIoResult {
+auto TcpStream::receive(void *buffer, std::uint32_t size) noexcept
+    -> std::expected<std::uint32_t, SystemErrorCode> {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     DWORD bytes = 0;
     DWORD flags = 0;
@@ -549,13 +552,14 @@ auto TcpStream::receive(void *buffer, std::uint32_t size) noexcept -> SystemIoRe
         .buf = static_cast<char *>(buffer),
     };
 
-    std::ignore = WSARecv(m_socket, &buf, 1, &bytes, &flags, nullptr, nullptr);
-    return {.status = WSAGetLastError(), .size = bytes};
+    if (WSARecv(m_socket, &buf, 1, &bytes, &flags, nullptr, nullptr) == TRUE) [[likely]]
+        return bytes;
+    return std::unexpected<SystemErrorCode>{WSAGetLastError()};
 #elif defined(__linux) || defined(__linux__)
     ssize_t result = ::recv(m_socket, buffer, size, 0);
     if (result >= 0) [[likely]]
-        return {.status = {}, .size = static_cast<std::uint32_t>(result)};
-    return {.status = errno, .size = 0};
+        return static_cast<std::uint32_t>(result);
+    return std::unexpected<SystemErrorCode>{errno};
 #endif
 }
 
@@ -637,15 +641,16 @@ auto TcpStream::setReceiveTimeout(std::uint32_t milliseconds) noexcept -> System
 #endif
 }
 
-auto TcpListener::AcceptAwaitable::await_resume() const -> TcpStream {
+auto TcpListener::AcceptAwaitable::await_resume() const noexcept
+    -> std::expected<TcpStream, SystemErrorCode> {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     if (m_ovlp.error != 0) [[unlikely]] {
         if (m_connection != INVALID_SOCKET)
             closesocket(m_connection);
-        throw std::system_error(m_ovlp.error, std::system_category(), "TcpListener::accept");
+        return std::unexpected<SystemErrorCode>{static_cast<int>(m_ovlp.error)};
     }
 
-    return {m_connection, m_address};
+    return std::expected<TcpStream, SystemErrorCode>{std::in_place, m_connection, m_address};
 #endif
 }
 
@@ -759,16 +764,16 @@ auto TcpListener::listen(const InetAddress &address) noexcept -> SystemErrorCode
 #endif
 }
 
-auto TcpListener::accept() const -> TcpStream {
+auto TcpListener::accept() const noexcept -> std::expected<TcpStream, SystemErrorCode> {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     InetAddress address;
     int addrlen = sizeof(address);
 
     SOCKET s = WSAAccept(m_socket, reinterpret_cast<sockaddr *>(&address), &addrlen, nullptr, 0);
     if (s == INVALID_SOCKET) [[unlikely]]
-        throw std::system_error(WSAGetLastError(), std::system_category(), "TcpListener::accept");
+        return std::unexpected<SystemErrorCode>{static_cast<int>(WSAGetLastError())};
 
-    return {s, address};
+    return std::expected<TcpStream, SystemErrorCode>{std::in_place, s, address};
 #endif
 }
 
