@@ -553,9 +553,6 @@ static auto ioUringSetupFlags() noexcept -> std::uint32_t {
         flags |= IORING_SETUP_TASKRUN_FLAG;
     }
 
-    if (version >= makeVersion(6, 0, 0))
-        flags |= IORING_SETUP_SINGLE_ISSUER;
-
     return flags;
 }
 
@@ -648,7 +645,6 @@ SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
       m_random{std::random_device{}()},
       m_uring{},
       m_wakeUp{-1},
-      m_wakeUpBuffer{},
       m_taskQueue{16384},
       m_localTasks{} {
     // Create io_uring.
@@ -709,7 +705,6 @@ SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
       m_random{std::move(other.m_random)},
       m_uring{other.m_uring},
       m_wakeUp{other.m_wakeUp},
-      m_wakeUpBuffer{},
       m_taskQueue{std::move(other.m_taskQueue)},
       m_localTasks{std::move(other.m_localTasks)} {
     other.m_uring  = nullptr;
@@ -865,18 +860,26 @@ auto SchedulerWorker::start() noexcept -> void {
     io_uring_cqe *cqe = nullptr;
     __kernel_timespec timeout{};
 
+    std::uint64_t wakeUpBuffer = 0;
+
     // Prepare for wake up event. Older versions of linux kernel does not support multishot read. We
     // would manually simulate it.
-    const auto prepareWakeup = [this, ring]() -> void {
+    const auto prepareWakeup = [this, ring, &wakeUpBuffer]() -> void {
         io_uring_sqe *sqe = io_uring_get_sqe(ring);
         while (sqe == nullptr) [[unlikely]] {
-            io_uring_submit(ring);
+            // Terminate if failed to prepare or wake up event. Avoid undefined behavior.
+            if (io_uring_submit(ring)) [[unlikely]]
+                std::terminate();
+
             sqe = io_uring_get_sqe(ring);
         }
 
-        io_uring_prep_read(sqe, m_wakeUp, &m_wakeUpBuffer, sizeof(m_wakeUpBuffer), 0);
+        io_uring_prep_read(sqe, m_wakeUp, &wakeUpBuffer, sizeof(wakeUpBuffer), 0);
         io_uring_sqe_set_data(sqe, nullptr);
-        io_uring_submit(ring);
+
+        // Terminate if failed to prepare or wake up event. Avoid undefined behavior.
+        if (io_uring_submit(ring) < 0) [[unlikely]]
+            std::terminate();
     };
 
     // Handle tasks once before entering the event loop.
@@ -891,11 +894,11 @@ auto SchedulerWorker::start() noexcept -> void {
         while (result == 0) {
             auto *ovlp = static_cast<Overlapped *>(io_uring_cqe_get_data(cqe));
 
-            // Ignore wake up event.
-            if (ovlp != nullptr) {
+            if (ovlp != nullptr) [[likely]] {
                 ovlp->result = cqe->res;
                 this->schedule(*ovlp->promise);
             } else {
+                // Stop notification.
                 shouldStop = true;
             }
 

@@ -347,10 +347,6 @@ private:
     /// \brief
     ///   Event file descriptor that is used to wake up \c io_uring.
     int m_wakeUp;
-
-    /// \brief
-    ///   Buffer for waking up \c io_uring.
-    std::uint64_t m_wakeUpBuffer;
 #endif
 
     /// \brief
