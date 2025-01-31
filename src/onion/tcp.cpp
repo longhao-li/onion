@@ -223,8 +223,10 @@ auto TcpStream::ConnectAwaitable::await_resume() const noexcept -> SystemErrorCo
 #endif
 }
 
-auto TcpStream::ConnectAwaitable::await_suspend() noexcept -> bool {
+auto TcpStream::ConnectAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    m_ovlp.promise = &promise;
+
     // Create a new socket for the connection.
     auto *addr  = reinterpret_cast<const sockaddr *>(m_address);
     int addrlen = (addr->sa_family == AF_INET) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
@@ -274,6 +276,8 @@ auto TcpStream::ConnectAwaitable::await_suspend() noexcept -> bool {
     m_ovlp.error = static_cast<std::uint32_t>(error);
     return false;
 #elif defined(__linux) || defined(__linux__)
+    m_ovlp.promise = &promise;
+
     // Create a new socket for the connection.
     auto *addr        = reinterpret_cast<const sockaddr *>(m_address);
     socklen_t addrlen = (addr->sa_family == AF_INET) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
@@ -301,143 +305,6 @@ auto TcpStream::ConnectAwaitable::await_suspend() noexcept -> bool {
 
     io_uring_prep_connect(sqe, m_socket, addr, addrlen);
     io_uring_sqe_set_flags(sqe, 0);
-    io_uring_sqe_set_data(sqe, &m_ovlp);
-
-    io_uring_submit(ring);
-    return true;
-#endif
-}
-
-auto TcpStream::SendAwaitable::await_suspend() noexcept -> bool {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    auto ovlp = reinterpret_cast<LPOVERLAPPED>(&m_ovlp);
-
-    DWORD bytes = 0;
-    WSABUF buffer{
-        .len = m_size,
-        .buf = static_cast<char *>(const_cast<void *>(m_data)),
-    };
-
-    // We do not need to check the return value of WSASend because we will check the error code
-    // later.
-    std::ignore = WSASend(m_socket, &buffer, 1, &bytes, 0, ovlp, nullptr);
-    int error   = WSAGetLastError();
-
-    // Send operation is completed immediately.
-    if (error == 0) {
-        m_ovlp.error = 0;
-        m_ovlp.bytes = bytes;
-        return false;
-    }
-
-    // Send operation is pending.
-    if (error == ERROR_IO_PENDING) [[likely]]
-        return true;
-
-    // Send operation failed.
-    m_ovlp.error = static_cast<std::uint32_t>(error);
-    return false;
-#elif defined(__linux) || defined(__linux__)
-    // Try to send data immediately.
-    int result = ::send(m_socket, m_data, m_size, MSG_DONTWAIT | MSG_NOSIGNAL);
-    if (result >= 0) {
-        m_ovlp.result = result;
-        return false;
-    }
-
-    // Error sending data.
-    int error = errno;
-    if (error != EAGAIN && error != EWOULDBLOCK) {
-        m_ovlp.result = -error;
-        return false;
-    }
-
-    // Schedule the send operation.
-    auto *worker = SchedulerWorker::threadWorker();
-
-    auto *ring        = static_cast<io_uring *>(worker->ioMultiplexer());
-    io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    while (sqe == nullptr) [[unlikely]] {
-        int result = io_uring_submit(ring);
-        if (result < 0) [[unlikely]] {
-            m_ovlp.result = result;
-            return false;
-        }
-
-        sqe = io_uring_get_sqe(ring);
-    }
-
-    io_uring_prep_send(sqe, m_socket, m_data, m_size, MSG_NOSIGNAL);
-    io_uring_sqe_set_flags(sqe, IOSQE_ASYNC);
-    io_uring_sqe_set_data(sqe, &m_ovlp);
-
-    io_uring_submit(ring);
-    return true;
-#endif
-}
-
-auto TcpStream::ReceiveAwaitable::await_suspend() noexcept -> bool {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    auto ovlp = reinterpret_cast<LPOVERLAPPED>(&m_ovlp);
-
-    DWORD bytes = 0;
-    DWORD flags = 0;
-    WSABUF buffer{
-        .len = m_size,
-        .buf = static_cast<char *>(m_buffer),
-    };
-
-    // We do not need to check the return value of WSARecv because we will check the error code
-    // later.
-    std::ignore = WSARecv(m_socket, &buffer, 1, &bytes, &flags, ovlp, nullptr);
-    int error   = WSAGetLastError();
-
-    // Receive operation is completed immediately.
-    if (error == 0) {
-        m_ovlp.error = 0;
-        m_ovlp.bytes = bytes;
-        return false;
-    }
-
-    // Receive operation is pending.
-    if (error == ERROR_IO_PENDING) [[likely]]
-        return true;
-
-    // Receive operation failed.
-    m_ovlp.error = static_cast<std::uint32_t>(error);
-    return false;
-#elif defined(__linux) || defined(__linux__)
-    // Try to receive data immediately.
-    int result = ::recv(m_socket, m_buffer, m_size, MSG_DONTWAIT);
-    if (result >= 0) {
-        m_ovlp.result = result;
-        return false;
-    }
-
-    // Error receiving data.
-    int error = errno;
-    if (error != EAGAIN && error != EWOULDBLOCK) {
-        m_ovlp.result = -error;
-        return false;
-    }
-
-    // Schedule the receive operation.
-    auto *worker = SchedulerWorker::threadWorker();
-
-    auto *ring        = static_cast<io_uring *>(worker->ioMultiplexer());
-    io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    while (sqe == nullptr) [[unlikely]] {
-        int result = io_uring_submit(ring);
-        if (result < 0) [[unlikely]] {
-            m_ovlp.result = result;
-            return false;
-        }
-
-        sqe = io_uring_get_sqe(ring);
-    }
-
-    io_uring_prep_recv(sqe, m_socket, m_buffer, m_size, 0);
-    io_uring_sqe_set_flags(sqe, IOSQE_ASYNC);
     io_uring_sqe_set_data(sqe, &m_ovlp);
 
     io_uring_submit(ring);
@@ -658,8 +525,10 @@ auto TcpListener::AcceptAwaitable::await_resume() const noexcept
 #endif
 }
 
-auto TcpListener::AcceptAwaitable::await_suspend() noexcept -> bool {
+auto TcpListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    m_ovlp.promise = &promise;
+
     // Create a new socket for the incoming connection.
     auto *addr   = reinterpret_cast<sockaddr *>(&m_address);
     m_connection = WSASocketW(addr->sa_family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
@@ -697,8 +566,9 @@ auto TcpListener::AcceptAwaitable::await_suspend() noexcept -> bool {
     m_ovlp.error = static_cast<std::uint32_t>(error);
     return false;
 #elif defined(__linux) || defined(__linux__)
-    auto *worker = SchedulerWorker::threadWorker();
+    m_ovlp.promise = &promise;
 
+    auto *worker      = SchedulerWorker::threadWorker();
     auto *ring        = static_cast<io_uring *>(worker->ioMultiplexer());
     io_uring_sqe *sqe = io_uring_get_sqe(ring);
     while (sqe == nullptr) [[unlikely]] {

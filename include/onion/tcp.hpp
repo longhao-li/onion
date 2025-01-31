@@ -1,10 +1,6 @@
 #pragma once
 
-#include "error.hpp"
 #include "inet_address.hpp"
-#include "scheduler.hpp"
-
-#include <expected>
 
 namespace onion {
 
@@ -51,9 +47,21 @@ public:
         ///   This coroutine should not be suspended and should be resumed immediately.
         template <typename T>
         auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
-            m_ovlp.promise = &coroutine.promise();
-            return this->await_suspend();
+            return this->await_suspend(coroutine.promise());
         }
+
+        /// \brief
+        ///   Prepare for asynchronous connection establishment and suspend this coroutine.
+        /// \param[in] promise
+        ///   Promise of current coroutine.
+        /// \retval true
+        ///   This coroutine should be suspended and be resumed later when connection is established
+        ///   or failed.
+        /// \retval false
+        ///   Connection establishment succeeded or failed immediately and this coroutine should not
+        ///   be suspended.
+        [[nodiscard]]
+        ONION_API auto await_suspend(detail::PromiseBase &promise) noexcept -> bool;
 
         /// \brief
         ///   Get the result of the asynchronous connect operation.
@@ -63,180 +71,10 @@ public:
         ONION_API auto await_resume() const noexcept -> SystemErrorCode;
 
     private:
-        /// \brief
-        ///   Prepare for asynchronous connection establishment and suspend this coroutine.
-        /// \retval true
-        ///   This coroutine should be suspended and be resumed later when connection is established
-        ///   or failed.
-        /// \retval false
-        ///   Connection establishment succeeded or failed immediately and this coroutine should not
-        ///   be suspended.
-        ONION_API auto await_suspend() noexcept -> bool;
-
-    private:
         detail::Overlapped m_ovlp;
         detail::socket_t m_socket;
         const InetAddress *m_address;
         TcpStream *m_stream;
-    };
-
-    /// \class SendAwaitable
-    /// \brief
-    ///   Awaitable object for asynchronous data sending.
-    class [[nodiscard]] SendAwaitable {
-    public:
-        /// \brief
-        ///   Create a new \c SendAwaitable object for asynchronous data sending.
-        /// \param socket
-        ///   The socket to send data.
-        /// \param data
-        ///   Pointer to start of data to send.
-        /// \param size
-        ///   Size in byte of data to send.
-        SendAwaitable(detail::socket_t socket, const void *data, std::uint32_t size) noexcept
-            : m_ovlp{},
-              m_socket{socket},
-              m_data{data},
-              m_size{size} {}
-
-        /// \brief
-        ///   C++20 coroutine API method. Always execute \c await_suspend().
-        /// \return
-        ///   This function always returns \c false.
-        [[nodiscard]]
-        static constexpr auto await_ready() noexcept -> bool {
-            return false;
-        }
-
-        /// \brief
-        ///   Prepare for async send operation and suspend the coroutine.
-        /// \tparam T
-        ///   Type of promise of current coroutine.
-        /// \param coroutine
-        ///   Current coroutine handle.
-        /// \retval true
-        ///   This coroutine should be suspended and resumed later.
-        /// \retval false
-        ///   This coroutine should not be suspended and should be resumed immediately.
-        template <typename T>
-        auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
-            m_ovlp.promise = &coroutine.promise();
-            return this->await_suspend();
-        }
-
-        /// \brief
-        ///   Get the result of the asynchronous send operation.
-        /// \return
-        ///   Number of bytes sent if succeeded. Otherwise, return a system error code that
-        ///   represents the IO error.
-        [[nodiscard]]
-        auto await_resume() const noexcept -> std::expected<std::uint32_t, SystemErrorCode> {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-            if (m_ovlp.error == 0) [[likely]]
-                return m_ovlp.bytes;
-            return std::unexpected<SystemErrorCode>{static_cast<int>(m_ovlp.error)};
-#elif defined(__linux) || defined(__linux__)
-            if (m_ovlp.result >= 0) [[likely]]
-                return static_cast<std::uint32_t>(m_ovlp.result);
-            return std::unexpected<SystemErrorCode>{-m_ovlp.result};
-#endif
-        }
-
-    private:
-        /// \brief
-        ///   Prepare for asynchronous data sending and suspend this coroutine.
-        /// \retval true
-        ///   This coroutine should be suspended and be resumed later when data is sent or failed.
-        /// \retval false
-        ///   Data sending succeeded or failed immediately and this coroutine should not be
-        ///   suspended.
-        ONION_API auto await_suspend() noexcept -> bool;
-
-    private:
-        detail::Overlapped m_ovlp;
-        detail::socket_t m_socket;
-        const void *m_data;
-        std::uint32_t m_size;
-    };
-
-    /// \class ReceiveAwaitable
-    /// \brief
-    ///   Awaitable object for asynchronous data receiving.
-    class [[nodiscard]] ReceiveAwaitable {
-    public:
-        /// \brief
-        ///   Create a new \c ReceiveAwaitable object for asynchronous data receiving.
-        /// \param socket
-        ///   The socket to receive data.
-        /// \param[out] buffer
-        ///   Pointer to start of data buffer.
-        /// \param size
-        ///   Size in byte of data buffer.
-        ReceiveAwaitable(detail::socket_t socket, void *buffer, std::uint32_t size) noexcept
-            : m_ovlp{},
-              m_socket{socket},
-              m_buffer{buffer},
-              m_size{size} {}
-
-        /// \brief
-        ///   C++20 coroutine API method. Always execute \c await_suspend().
-        /// \return
-        ///   This function always returns \c false.
-        [[nodiscard]]
-        static constexpr auto await_ready() noexcept -> bool {
-            return false;
-        }
-
-        /// \brief
-        ///   Prepare for async receive operation and suspend the coroutine.
-        /// \tparam T
-        ///   Type of promise of current coroutine.
-        /// \param coroutine
-        ///   Current coroutine handle.
-        /// \retval true
-        ///   This coroutine should be suspended and resumed later.
-        /// \retval false
-        ///   This coroutine should not be suspended and should be resumed immediately.
-        template <typename T>
-        auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
-            m_ovlp.promise = &coroutine.promise();
-            return this->await_suspend();
-        }
-
-        /// \brief
-        ///   Get the result of the asynchronous receive operation.
-        /// \return
-        ///   Number of bytes received if succeeded. Otherwise, return a system error code that
-        ///   represents the IO error.
-        [[nodiscard]]
-        auto await_resume() const noexcept -> std::expected<std::uint32_t, SystemErrorCode> {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-            if (m_ovlp.error == 0) [[likely]]
-                return m_ovlp.bytes;
-            return std::unexpected<SystemErrorCode>{static_cast<int>(m_ovlp.error)};
-#elif defined(__linux) || defined(__linux__)
-            if (m_ovlp.result >= 0) [[likely]]
-                return static_cast<std::uint32_t>(m_ovlp.result);
-            return std::unexpected<SystemErrorCode>{-m_ovlp.result};
-#endif
-        }
-
-    private:
-        /// \brief
-        ///   Prepare for asynchronous data receiving and suspend this coroutine.
-        /// \retval true
-        ///   This coroutine should be suspended and be resumed later when data is received or
-        ///   failed.
-        /// \retval false
-        ///   Data receiving succeeded or failed immediately and this coroutine should not be
-        ///   suspended.
-        ONION_API auto await_suspend() noexcept -> bool;
-
-    private:
-        detail::Overlapped m_ovlp;
-        detail::socket_t m_socket;
-        void *m_buffer;
-        std::uint32_t m_size;
     };
 
 public:
@@ -344,7 +182,7 @@ public:
     /// \return
     ///   Number of bytes sent if succeeded. Otherwise, return a system error code that represents
     ///   the IO error.
-    auto sendAsync(const void *data, std::uint32_t size) noexcept -> SendAwaitable {
+    auto sendAsync(const void *data, std::uint32_t size) noexcept -> detail::SendAwaitable {
         return {m_socket, data, size};
     }
 
@@ -371,7 +209,7 @@ public:
     /// \return
     ///   Number of bytes received if succeeded. Otherwise, return a system error code that
     ///   represents the IO error.
-    auto receiveAsync(void *buffer, std::uint32_t size) noexcept -> ReceiveAwaitable {
+    auto receiveAsync(void *buffer, std::uint32_t size) noexcept -> detail::ReceiveAwaitable {
         return {m_socket, buffer, size};
     }
 
@@ -478,7 +316,8 @@ public:
             : m_ovlp{},
               m_server{listener},
               m_connection{detail::InvalidSocket},
-              m_address{} {}
+              m_address{},
+              m_padding{} {}
 #elif defined(__linux) || defined(__linux__)
         /// \brief
         ///   Create a new \c AcceptAwaitable object for asynchronous connection acceptance.
@@ -512,9 +351,21 @@ public:
         ///   This coroutine should not be suspended and should be resumed immediately.
         template <typename T>
         auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
-            m_ovlp.promise = &coroutine.promise();
-            return this->await_suspend();
+            return this->await_suspend(coroutine.promise());
         }
+
+        /// \brief
+        ///   Prepare for async accept operation and suspend the coroutine.
+        /// \param[in] promise
+        ///   Promise of current coroutine.
+        /// \retval true
+        ///   This coroutine should be suspended and be resumed later when a new connection is
+        ///   accepted or failed.
+        /// \retval false
+        ///   Connection accepting succeeded or failed immediately and this coroutine should not be
+        ///   suspended.
+        [[nodiscard]]
+        ONION_API auto await_suspend(detail::PromiseBase &promise) noexcept -> bool;
 
         /// \brief
         ///   Get the result of the asynchronous accept operation.
@@ -523,17 +374,6 @@ public:
         ///   return a system error code that represents the IO error.
         [[nodiscard]]
         ONION_API auto await_resume() const noexcept -> std::expected<TcpStream, SystemErrorCode>;
-
-    private:
-        /// \brief
-        ///   Prepare for async accept operation and suspend the coroutine.
-        /// \retval true
-        ///   This coroutine should be suspended and be resumed later when a new connection is
-        ///   accepted or failed.
-        /// \retval false
-        ///   Connection accepting succeeded or failed immediately and this coroutine should not be
-        ///   suspended.
-        ONION_API auto await_suspend() noexcept -> bool;
 
     private:
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
