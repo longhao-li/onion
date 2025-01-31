@@ -146,7 +146,7 @@ auto acceptEx(SOCKET listenSocket,
               DWORD remoteAddressLength,
               LPDWORD bytesReceived,
               LPOVERLAPPED overlapped) noexcept -> BOOL {
-    std::atomic<LPFN_ACCEPTEX> function(nullptr);
+    static std::atomic<LPFN_ACCEPTEX> function{nullptr};
 
     // Try to accept new connection if the function pointer is valid.
     LPFN_ACCEPTEX accept = function.load(std::memory_order_relaxed);
