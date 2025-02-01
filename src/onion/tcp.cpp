@@ -422,8 +422,7 @@ auto TcpListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept 
     m_ovlp.promise = &promise;
 
     // Create a new socket for the incoming connection.
-    auto *addr   = reinterpret_cast<sockaddr *>(&m_address);
-    m_connection = WSASocketW(addr->sa_family, SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
+    m_connection = WSASocketW(AF_UNSPEC, SOCK_STREAM, IPPROTO_TCP, nullptr, 0,
                               WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
 
     if (m_connection == INVALID_SOCKET) [[unlikely]] {
@@ -441,7 +440,7 @@ auto TcpListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept 
     // Try to accept a new incoming connection.
     DWORD bytes = 0;
     if (acceptEx(m_server, m_connection, &m_address, 0, 0, sizeof(m_address) + sizeof(m_padding),
-                 &bytes, reinterpret_cast<LPOVERLAPPED>(&m_ovlp)) == TRUE) {
+                 &bytes, reinterpret_cast<LPOVERLAPPED>(&m_ovlp)) == TRUE) [[unlikely]] {
         m_ovlp.error = 0;
         return false;
     }
@@ -606,7 +605,7 @@ auto TcpListener::accept() const noexcept -> std::expected<TcpStream, SystemErro
 
     SOCKET s = WSAAccept(m_socket, reinterpret_cast<sockaddr *>(&address), &addrlen, nullptr, 0);
     if (s == INVALID_SOCKET) [[unlikely]]
-        return std::unexpected<SystemErrorCode>{static_cast<int>(WSAGetLastError())};
+        return std::unexpected<SystemErrorCode>{WSAGetLastError()};
 
     return std::expected<TcpStream, SystemErrorCode>{std::in_place, s, address};
 #elif defined(__linux) || defined(__linux__)

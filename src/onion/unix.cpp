@@ -271,3 +271,117 @@ auto UnixStream::setReceiveTimeout(std::uint32_t milliseconds) noexcept -> Syste
     return WSAGetLastError();
 #endif
 }
+
+auto UnixListener::AcceptAwaitable::await_resume() const noexcept
+    -> std::expected<UnixStream, SystemErrorCode> {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    if (m_ovlp.error != 0) [[unlikely]] {
+        if (m_connection != INVALID_SOCKET)
+            closesocket(m_connection);
+        return std::unexpected<SystemErrorCode>{static_cast<int>(m_ovlp.error)};
+    }
+
+    return std::expected<UnixStream, SystemErrorCode>{std::in_place, m_connection, m_address};
+#endif
+}
+
+auto UnixListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    m_ovlp.promise = &promise;
+
+    // Create a new socket for the incoming connection.
+    m_connection = WSASocketW(AF_UNIX, SOCK_STREAM, 0, nullptr, 0,
+                              WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+    if (m_connection == INVALID_SOCKET) [[unlikely]] {
+        m_ovlp.error = static_cast<std::uint32_t>(WSAGetLastError());
+        return false;
+    }
+
+    // Register to IOCP.
+    if (registerAndSetNotificationModes(m_connection) == FALSE) [[unlikely]] {
+        m_ovlp.error = static_cast<std::uint32_t>(GetLastError());
+        closesocket(m_connection);
+        return false;
+    }
+
+    // Try to accept a new incoming connection.
+    DWORD bytes = 0;
+    if (acceptEx(m_server, m_connection, &m_address, 0, 0, sizeof(m_address) + sizeof(m_padding),
+                 &bytes, reinterpret_cast<LPOVERLAPPED>(&m_ovlp)) == TRUE) [[unlikely]] {
+        m_ovlp.error = 0;
+        return false;
+    }
+
+    int error = WSAGetLastError();
+    if (error == 0) {
+        m_ovlp.error = 0;
+        return false;
+    }
+
+    if (error == ERROR_IO_PENDING) [[likely]]
+        return true;
+
+    m_ovlp.error = static_cast<std::uint32_t>(error);
+    return false;
+#endif
+}
+
+UnixListener::~UnixListener() noexcept {
+    this->close();
+}
+
+auto UnixListener::listen(const UnixSocketAddress &address) noexcept -> SystemErrorCode {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Create a new socket for the server.
+    SOCKET s = WSASocketW(AF_UNIX, SOCK_STREAM, 0, nullptr, 0,
+                          WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+    if (s == INVALID_SOCKET) [[unlikely]]
+        return WSAGetLastError();
+
+    // Unix socket on Windows does not support SO_REUSEADDR.
+    // Register the socket to IOCP.
+    if (registerAndSetNotificationModes(s) == FALSE) [[unlikely]] {
+        DWORD error = GetLastError();
+        closesocket(s);
+        return error;
+    }
+
+    // Bind the socket to the specified address.
+    auto *addr  = reinterpret_cast<const sockaddr *>(&address);
+    int addrlen = sizeof(UnixSocketAddress);
+    if (::bind(s, addr, addrlen) == SOCKET_ERROR) [[unlikely]] {
+        int error = WSAGetLastError();
+        closesocket(s);
+        return error;
+    }
+
+    this->close();
+
+    m_socket  = s;
+    m_address = address;
+
+    return {};
+#endif
+}
+
+auto UnixListener::accept() const noexcept -> std::expected<UnixStream, SystemErrorCode> {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    UnixSocketAddress address;
+    int addrlen = sizeof(address);
+
+    SOCKET s = WSAAccept(m_socket, reinterpret_cast<sockaddr *>(&address), &addrlen, nullptr, 0);
+    if (s == INVALID_SOCKET) [[unlikely]]
+        return std::unexpected<SystemErrorCode>{WSAGetLastError()};
+
+    return std::expected<UnixStream, SystemErrorCode>{std::in_place, s, address};
+#endif
+}
+
+auto UnixListener::close() noexcept -> void {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    if (m_socket != INVALID_SOCKET) {
+        closesocket(m_socket);
+        m_socket = INVALID_SOCKET;
+    }
+#endif
+}

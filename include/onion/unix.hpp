@@ -176,10 +176,10 @@ public:
     ///   Get address of the Unix domain socket. The return value could be random if this
     ///   \c UnixStream object is empty.
     /// \return
-    ///   Path to the Unix domain socket.
+    ///   Unix domain socket address of the remote endpoint.
     [[nodiscard]]
-    auto address() const noexcept -> std::string_view {
-        return m_address.path();
+    auto remoteAddress() const noexcept -> const UnixSocketAddress & {
+        return m_address;
     }
 
     /// \brief
@@ -324,6 +324,173 @@ private:
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
     ONION_API auto setReceiveTimeout(std::uint32_t timeout) noexcept -> SystemErrorCode;
+
+private:
+    detail::socket_t m_socket;
+    UnixSocketAddress m_address;
+};
+
+/// \class UnixListener
+/// \brief
+///   \c UnixListener represents a Unix domain stream socket listener. This class could only be
+///   used in workers.
+class UnixListener {
+public:
+    /// \class AcceptAwaitable
+    /// \brief
+    ///   Awaitable object for asynchronous connection acceptance.
+    class [[nodiscard]] AcceptAwaitable {
+    public:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        /// \brief
+        ///   Create a new \c AcceptAwaitable object for asynchronous connection acceptance.
+        /// \param listener
+        ///   The Unix domain listener socket to accept new connection.
+        explicit AcceptAwaitable(detail::socket_t listener) noexcept
+            : m_ovlp{},
+              m_server{listener},
+              m_connection{detail::InvalidSocket},
+              m_address{},
+              m_padding{} {}
+#endif
+
+        /// \brief
+        ///   C++20 coroutine API method. Always execute \c await_suspend().
+        /// \return
+        ///   This function always returns \c false.
+        [[nodiscard]]
+        static constexpr auto await_ready() noexcept -> bool {
+            return false;
+        }
+
+        /// \brief
+        ///   Prepare for async accept operation and suspend the coroutine.
+        /// \tparam T
+        ///   Type of promise of current coroutine.
+        /// \param coroutine
+        ///   Current coroutine handle.
+        /// \retval true
+        ///   This coroutine should be suspended and resumed later.
+        /// \retval false
+        ///   This coroutine should not be suspended and should be resumed immediately.
+        template <typename T>
+        auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
+            return this->await_suspend(coroutine.promise());
+        }
+
+        /// \brief
+        ///   Prepare for async accept operation and suspend the coroutine.
+        /// \param[in] promise
+        ///   Promise of current coroutine.
+        /// \retval true
+        ///   This coroutine should be suspended and be resumed later when a new connection is
+        ///   accepted or failed.
+        /// \retval false
+        ///   Connection accepting succeeded or failed immediately and this coroutine should not be
+        ///   suspended.
+        [[nodiscard]]
+        ONION_API auto await_suspend(detail::PromiseBase &promise) noexcept -> bool;
+
+        /// \brief
+        ///   Get the result of the asynchronous accept operation.
+        /// \return
+        ///   A \c UnixStream object that represents the new accepted Unix domain socket connection.
+        ///   Otherwise, return a system error code that represents the IO error.
+        [[nodiscard]]
+        ONION_API auto await_resume() const noexcept -> std::expected<UnixStream, SystemErrorCode>;
+
+    private:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        detail::Overlapped m_ovlp;
+        detail::socket_t m_server;
+        detail::socket_t m_connection;
+        UnixSocketAddress m_address;
+
+        [[maybe_unused]]
+        std::byte m_padding[16];
+#endif
+    };
+
+public:
+    /// \brief
+    ///   Create an empty \c UnixListener object. Empty \c UnixListener object is not bound to any
+    ///   Unix domain socket.
+    UnixListener() noexcept : m_socket{detail::InvalidSocket}, m_address{} {}
+
+    /// \brief
+    ///   \c UnixListener is not copyable.
+    UnixListener(const UnixListener &other) = delete;
+
+    /// \brief
+    ///   Move constructor of \c UnixListener.
+    /// \param[inout] other
+    ///   The \c UnixListener object to move. The moved \c UnixListener object will be empty.
+    UnixListener(UnixListener &&other) noexcept
+        : m_socket{other.m_socket},
+          m_address{other.m_address} {
+        other.m_socket = detail::InvalidSocket;
+    }
+
+    /// \brief
+    ///   Destroy this Unix domain listener and release resources.
+    ONION_API ~UnixListener() noexcept;
+
+    /// \brief
+    ///   \c UnixListener is not copyable.
+    auto operator=(const UnixListener &other) = delete;
+
+    /// \brief
+    ///   Move assignment operator of \c UnixListener.
+    /// \param[inout] other
+    ///   The \c UnixListener object to move. The moved \c UnixListener object will be empty.
+    /// \return
+    ///   Reference to this \c UnixListener object.
+    ONION_API auto operator=(UnixListener &&other) noexcept -> UnixListener &;
+
+    /// \brief
+    ///   Get local address of this listener. The return value could be random if this
+    ///   \c UnixListener object is empty.
+    /// \return
+    ///   Local address of this listener.
+    [[nodiscard]]
+    auto localAddress() const noexcept -> const UnixSocketAddress & {
+        return m_address;
+    }
+
+    /// \brief
+    ///   Start listening to the specified address. This \c UnixListener object will not be affected
+    ///   if failed to bind to the specified address.
+    /// \param[in] address
+    ///   The Unix domain socket address to bind.
+    /// \return
+    ///   A system error code object that represents system error. The error code is 0 if this
+    ///   operation is succeeded.
+    ONION_API auto listen(const UnixSocketAddress &address) noexcept -> SystemErrorCode;
+
+    /// \brief
+    ///   Accept a new incoming Unix domain socket connection. This method will block current thread
+    ///   until a new incoming connection is established or any error occurs.
+    /// \return
+    ///   A \c UnixStream object that represents the new accepted Unix domain socket connection.
+    ///   Otherwise, return a system error code that represents the IO error.
+    [[nodiscard]]
+    ONION_API auto accept() const noexcept -> std::expected<UnixStream, SystemErrorCode>;
+
+    /// \brief
+    ///   Accept a new incoming Unix domain socket connection asynchronously. This method will block
+    ///   current thread until a new incoming connection is established or any error occurs.
+    /// \return
+    ///   A \c UnixStream object that represents the new accepted Unix domain socket connection.
+    ///   Otherwise, return a system error code that represents the IO error.
+    auto acceptAsync() const noexcept -> AcceptAwaitable {
+        return AcceptAwaitable{m_socket};
+    }
+
+    /// \brief
+    ///   Stop listening and release all resources. Closing a \c UnixListener object will cause
+    ///   errors for pending accept operations. This method does nothing if this is an empty
+    ///   \c UnixListener object.
+    ONION_API auto close() noexcept -> void;
 
 private:
     detail::socket_t m_socket;

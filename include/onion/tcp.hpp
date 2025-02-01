@@ -429,10 +429,10 @@ public:
     ONION_API auto operator=(TcpListener &&other) noexcept -> TcpListener &;
 
     /// \brief
-    ///   Get local address of this server. The return value could be random if this \c TcpListener
-    ///   object is empty.
+    ///   Get local address of this listener. The return value could be random if this \c
+    ///   TcpListener object is empty.
     /// \return
-    ///   Local address of this server.
+    ///   Local address of this listener.
     [[nodiscard]]
     auto localAddress() const noexcept -> const InetAddress & {
         return m_address;
