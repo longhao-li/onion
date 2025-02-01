@@ -3,6 +3,10 @@
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
 #    include <WinSock2.h>
 #    include <afunix.h>
+#elif defined(__linux) || defined(__linux__)
+#    include <liburing.h>
+#    include <netinet/in.h>
+#    include <sys/un.h>
 #endif
 
 using namespace onion;
@@ -130,6 +134,41 @@ auto UnixStream::ConnectAwaitable::await_suspend(PromiseBase &promise) noexcept 
 
     m_ovlp.error = static_cast<std::uint32_t>(error);
     return false;
+#elif defined(__linux) || defined(__linux__)
+    static_assert(sizeof(UnixSocketAddress) == sizeof(sockaddr_un));
+    m_ovlp.promise = &promise;
+
+    // Create a new socket for the connection.
+    m_socket = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (m_socket == -1) [[unlikely]] {
+        m_ovlp.result = -errno;
+        return false;
+    }
+
+    // Prepare for async connect operation.
+    auto *worker = SchedulerWorker::threadWorker();
+
+    auto *ring        = static_cast<io_uring *>(worker->ioMultiplexer());
+    io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        int result = io_uring_submit(ring);
+        if (result < 0) [[unlikely]] {
+            m_ovlp.result = result;
+            return false;
+        }
+
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    auto *addr        = reinterpret_cast<const sockaddr *>(m_address);
+    socklen_t addrlen = sizeof(UnixSocketAddress);
+
+    io_uring_prep_connect(sqe, m_socket, addr, addrlen);
+    io_uring_sqe_set_flags(sqe, 0);
+    io_uring_sqe_set_data(sqe, &m_ovlp);
+
+    io_uring_submit(ring);
+    return true;
 #endif
 }
 
@@ -149,6 +188,21 @@ auto UnixStream::ConnectAwaitable::await_resume() const noexcept -> SystemErrorC
         closesocket(m_socket);
 
     return static_cast<int>(m_ovlp.error);
+#elif defined(__linux) || defined(__linux__)
+    if (m_ovlp.result == 0) {
+        if (m_stream->m_socket != InvalidSocket)
+            ::close(m_stream->m_socket);
+
+        m_stream->m_socket  = m_socket;
+        m_stream->m_address = *m_address;
+
+        return {};
+    }
+
+    if (m_socket != InvalidSocket)
+        ::close(m_socket);
+
+    return -m_ovlp.result;
 #endif
 }
 
@@ -211,6 +265,28 @@ auto UnixStream::connect(const UnixSocketAddress &address) noexcept -> SystemErr
     m_address = address;
 
     return {};
+#elif defined(__linux) || defined(__linux__)
+    // Create a new socket for the connection.
+    int s = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (s == -1) [[unlikely]]
+        return errno;
+
+    // Try to connect to the peer address.
+    auto *addr        = reinterpret_cast<const sockaddr *>(&m_address);
+    socklen_t addrlen = sizeof(UnixSocketAddress);
+
+    if (::connect(s, addr, addrlen) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return error;
+    }
+
+    this->close();
+
+    m_socket  = s;
+    m_address = address;
+
+    return {};
 #endif
 }
 
@@ -226,6 +302,11 @@ auto UnixStream::send(const void *data, std::uint32_t size) noexcept
     if (WSASend(m_socket, &buffer, 1, &bytes, 0, nullptr, nullptr) == TRUE) [[likely]]
         return bytes;
     return std::unexpected<SystemErrorCode>{WSAGetLastError()};
+#elif defined(__linux) || defined(__linux__)
+    ssize_t result = ::send(m_socket, data, size, MSG_NOSIGNAL);
+    if (result >= 0) [[likely]]
+        return static_cast<std::uint32_t>(result);
+    return std::unexpected<SystemErrorCode>{errno};
 #endif
 }
 
@@ -242,6 +323,11 @@ auto UnixStream::receive(void *buffer, std::uint32_t size) noexcept
     if (WSARecv(m_socket, &buf, 1, &bytes, &flags, nullptr, nullptr) == TRUE) [[likely]]
         return bytes;
     return std::unexpected<SystemErrorCode>{WSAGetLastError()};
+#elif defined(__linux) || defined(__linux__)
+    ssize_t result = ::recv(m_socket, buffer, size, 0);
+    if (result >= 0) [[likely]]
+        return static_cast<std::uint32_t>(result);
+    return std::unexpected<SystemErrorCode>{errno};
 #endif
 }
 
@@ -250,6 +336,11 @@ auto UnixStream::close() noexcept -> void {
     if (m_socket != INVALID_SOCKET) {
         closesocket(m_socket);
         m_socket = INVALID_SOCKET;
+    }
+#elif defined(__linux) || defined(__linux__)
+    if (m_socket != InvalidSocket) {
+        ::close(m_socket);
+        m_socket = InvalidSocket;
     }
 #endif
 }
@@ -260,6 +351,15 @@ auto UnixStream::setSendTimeout(std::uint32_t milliseconds) noexcept -> SystemEr
     std::ignore = setsockopt(m_socket, SOL_SOCKET, SO_SNDTIMEO,
                              reinterpret_cast<const char *>(&value), sizeof(value));
     return WSAGetLastError();
+#elif defined(__linux) || defined(__linux__)
+    struct timeval timeout{
+        .tv_sec  = milliseconds / 1000,
+        .tv_usec = (milliseconds % 1000) * 1000,
+    };
+
+    if (setsockopt(m_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == -1) [[unlikely]]
+        return errno;
+    return {};
 #endif
 }
 
@@ -269,6 +369,15 @@ auto UnixStream::setReceiveTimeout(std::uint32_t milliseconds) noexcept -> Syste
     std::ignore = setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO,
                              reinterpret_cast<const char *>(&value), sizeof(value));
     return WSAGetLastError();
+#elif defined(__linux) || defined(__linux__)
+    struct timeval timeout{
+        .tv_sec  = milliseconds / 1000,
+        .tv_usec = (milliseconds % 1000) * 1000,
+    };
+
+    if (setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1) [[unlikely]]
+        return errno;
+    return {};
 #endif
 }
 
@@ -282,6 +391,10 @@ auto UnixListener::AcceptAwaitable::await_resume() const noexcept
     }
 
     return std::expected<UnixStream, SystemErrorCode>{std::in_place, m_connection, m_address};
+#elif defined(__linux) || defined(__linux__)
+    if (m_ovlp.result < 0) [[unlikely]]
+        return std::unexpected<SystemErrorCode>{-m_ovlp.result};
+    return std::expected<UnixStream, SystemErrorCode>{std::in_place, m_ovlp.result, m_address};
 #endif
 }
 
@@ -323,6 +436,33 @@ auto UnixListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept
 
     m_ovlp.error = static_cast<std::uint32_t>(error);
     return false;
+#elif defined(__linux) || defined(__linux__)
+    m_ovlp.promise = &promise;
+
+    auto *worker      = SchedulerWorker::threadWorker();
+    auto *ring        = static_cast<io_uring *>(worker->ioMultiplexer());
+    io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        int result = io_uring_submit(ring);
+        if (result < 0) [[unlikely]] {
+            m_ovlp.result = result;
+            return false;
+        }
+
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    m_addrlen = sizeof(m_address);
+
+    auto *addr    = reinterpret_cast<sockaddr *>(&m_address);
+    auto *addrlen = &m_addrlen;
+
+    io_uring_prep_accept(sqe, m_server, addr, addrlen, SOCK_CLOEXEC);
+    io_uring_sqe_set_flags(sqe, 0);
+    io_uring_sqe_set_data(sqe, &m_ovlp);
+
+    io_uring_submit(ring);
+    return true;
 #endif
 }
 
@@ -361,6 +501,43 @@ auto UnixListener::listen(const UnixSocketAddress &address) noexcept -> SystemEr
     m_address = address;
 
     return {};
+#elif defined(__linux) || defined(__linux__)
+    // Create a new socket for the server.
+    int s = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (s == -1) [[unlikely]]
+        return errno;
+
+    // Enable SO_REUSEADDR option.
+    const int value = 1;
+    if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return error;
+    }
+
+    // Bind the socket to the specified address.
+    auto *addr        = reinterpret_cast<const sockaddr *>(&address);
+    socklen_t addrlen = sizeof(UnixSocketAddress);
+
+    if (::bind(s, addr, addrlen) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return error;
+    }
+
+    // Start listening on the socket.
+    if (::listen(s, SOMAXCONN) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return error;
+    }
+
+    this->close();
+
+    m_socket  = s;
+    m_address = address;
+
+    return {};
 #endif
 }
 
@@ -374,6 +551,15 @@ auto UnixListener::accept() const noexcept -> std::expected<UnixStream, SystemEr
         return std::unexpected<SystemErrorCode>{WSAGetLastError()};
 
     return std::expected<UnixStream, SystemErrorCode>{std::in_place, s, address};
+#elif defined(__linux) || defined(__linux__)
+    UnixSocketAddress address;
+    socklen_t addrlen = sizeof(address);
+
+    int s = ::accept4(m_socket, reinterpret_cast<sockaddr *>(&address), &addrlen, SOCK_CLOEXEC);
+    if (s == -1) [[unlikely]]
+        return std::unexpected<SystemErrorCode>{errno};
+
+    return std::expected<UnixStream, SystemErrorCode>{std::in_place, s, address};
 #endif
 }
 
@@ -382,6 +568,12 @@ auto UnixListener::close() noexcept -> void {
     if (m_socket != INVALID_SOCKET) {
         closesocket(m_socket);
         m_socket = INVALID_SOCKET;
+    }
+#elif defined(__linux) || defined(__linux__)
+    if (m_socket != InvalidSocket) {
+        ::close(m_socket);
+        ::unlink(m_address.path().data());
+        m_socket = InvalidSocket;
     }
 #endif
 }

@@ -49,6 +49,32 @@ public:
         return m_path;
     }
 
+    /// \brief
+    ///   Checks if this Unix domain socket address is the same as another one.
+    /// \param other
+    ///   The Unix domain socket address to be compared with.
+    /// \retval true
+    ///   This Unix domain socket address is the same as \p other.
+    /// \retval false
+    ///   This Unix domain socket address is different from \p other.
+    [[nodiscard]]
+    constexpr auto operator==(const UnixSocketAddress &other) const noexcept -> bool {
+        return std::char_traits<char>::compare(m_path, other.m_path, sizeof(m_path)) == 0;
+    }
+
+    /// \brief
+    ///   Checks if this Unix domain socket address is different from another one.
+    /// \param other
+    ///   The Unix domain socket address to be compared with.
+    /// \retval true
+    ///   This Unix domain socket address is different from \p other.
+    /// \retval false
+    ///   This Unix domain socket address is the same as \p other.
+    [[nodiscard]]
+    constexpr auto operator!=(const UnixSocketAddress &other) const noexcept -> bool {
+        return !(*this == other);
+    }
+
 private:
     detail::SocketAddressFamily m_family;
     char m_path[108];
@@ -352,6 +378,16 @@ public:
               m_connection{detail::InvalidSocket},
               m_address{},
               m_padding{} {}
+#elif defined(__linux) || defined(__linux__)
+        /// \brief
+        ///   Create a new \c AcceptAwaitable object for asynchronous connection acceptance.
+        /// \param listener
+        ///   The Unix domain listener socket to accept new connection.
+        explicit AcceptAwaitable(detail::socket_t listener) noexcept
+            : m_ovlp{},
+              m_server{listener},
+              m_addrlen{},
+              m_address{} {}
 #endif
 
         /// \brief
@@ -408,6 +444,11 @@ public:
 
         [[maybe_unused]]
         std::byte m_padding[16];
+#elif defined(__linux) || defined(__linux__)
+        detail::Overlapped m_ovlp;
+        detail::socket_t m_server;
+        unsigned int m_addrlen;
+        UnixSocketAddress m_address;
 #endif
     };
 

@@ -81,40 +81,6 @@ auto registerAndSetNotificationModes(SOCKET s) noexcept -> BOOL;
 } // namespace onion::detail
 #endif
 
-auto TcpStream::ConnectAwaitable::await_resume() const noexcept -> SystemErrorCode {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    if (m_ovlp.error == 0) [[likely]] {
-        if (m_stream->m_socket != INVALID_SOCKET)
-            closesocket(m_stream->m_socket);
-
-        m_stream->m_socket  = m_socket;
-        m_stream->m_address = *m_address;
-
-        return {};
-    }
-
-    if (m_socket != INVALID_SOCKET)
-        closesocket(m_socket);
-
-    return static_cast<int>(m_ovlp.error);
-#elif defined(__linux) || defined(__linux__)
-    if (m_ovlp.result == 0) {
-        if (m_stream->m_socket != InvalidSocket)
-            ::close(m_stream->m_socket);
-
-        m_stream->m_socket  = m_socket;
-        m_stream->m_address = *m_address;
-
-        return {};
-    }
-
-    if (m_socket != InvalidSocket)
-        ::close(m_socket);
-
-    return -m_ovlp.result;
-#endif
-}
-
 auto TcpStream::ConnectAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     m_ovlp.promise = &promise;
@@ -201,6 +167,40 @@ auto TcpStream::ConnectAwaitable::await_suspend(PromiseBase &promise) noexcept -
 
     io_uring_submit(ring);
     return true;
+#endif
+}
+
+auto TcpStream::ConnectAwaitable::await_resume() const noexcept -> SystemErrorCode {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    if (m_ovlp.error == 0) [[likely]] {
+        if (m_stream->m_socket != INVALID_SOCKET)
+            closesocket(m_stream->m_socket);
+
+        m_stream->m_socket  = m_socket;
+        m_stream->m_address = *m_address;
+
+        return {};
+    }
+
+    if (m_socket != INVALID_SOCKET)
+        closesocket(m_socket);
+
+    return static_cast<int>(m_ovlp.error);
+#elif defined(__linux) || defined(__linux__)
+    if (m_ovlp.result == 0) {
+        if (m_stream->m_socket != InvalidSocket)
+            ::close(m_stream->m_socket);
+
+        m_stream->m_socket  = m_socket;
+        m_stream->m_address = *m_address;
+
+        return {};
+    }
+
+    if (m_socket != InvalidSocket)
+        ::close(m_socket);
+
+    return -m_ovlp.result;
 #endif
 }
 
@@ -472,6 +472,8 @@ auto TcpListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept 
         sqe = io_uring_get_sqe(ring);
     }
 
+    m_addrlen = sizeof(m_address);
+
     auto *addr    = reinterpret_cast<sockaddr *>(&m_address);
     auto *addrlen = &m_addrlen;
 
@@ -560,7 +562,7 @@ auto TcpListener::listen(const InetAddress &address) noexcept -> SystemErrorCode
         return errno;
 
     // Enable SO_REUSEADDR option.
-    int value = 1;
+    const int value = 1;
     if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) == -1) [[unlikely]] {
         int error = errno;
         ::close(s);
@@ -568,7 +570,6 @@ auto TcpListener::listen(const InetAddress &address) noexcept -> SystemErrorCode
     }
 
     // Enable SO_REUSEPORT option.
-    value = 1;
     if (setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &value, sizeof(value)) == -1) [[unlikely]] {
         int error = errno;
         ::close(s);
@@ -609,7 +610,7 @@ auto TcpListener::accept() const noexcept -> std::expected<TcpStream, SystemErro
 
     return std::expected<TcpStream, SystemErrorCode>{std::in_place, s, address};
 #elif defined(__linux) || defined(__linux__)
-    InetAddress address{};
+    InetAddress address;
     socklen_t addrlen = sizeof(address);
 
     int s = ::accept4(m_socket, reinterpret_cast<sockaddr *>(&address), &addrlen, SOCK_CLOEXEC);
