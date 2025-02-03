@@ -1,4 +1,4 @@
-#include "onion/scheduler.hpp"
+#include "onion/io_context.hpp"
 
 #include <doctest/doctest.h>
 
@@ -9,7 +9,7 @@ using namespace onion;
 using namespace std::chrono_literals;
 
 TEST_CASE("[Task] Coroutine context switch") {
-    Scheduler scheduler{0};
+    IoContext ctx{0};
     const int value = 42;
 
     auto task3 = []() -> Task<> { co_return; };
@@ -35,11 +35,11 @@ TEST_CASE("[Task] Coroutine context switch") {
         str = co_await task1();
         CHECK(str == "Hello, World!");
 
-        scheduler.stop();
+        ctx.stop();
     };
 
-    scheduler.schedule(task0());
-    scheduler.start();
+    ctx.schedule(task0());
+    ctx.start();
 }
 
 TEST_CASE("[Task] Manually control") {
@@ -98,22 +98,22 @@ TEST_CASE("[Task] Manual exception control") {
 }
 
 TEST_CASE("[Task] Yielding") {
-    Scheduler scheduler{1};
+    IoContext ctx{1};
 
     auto task = [&]() -> Task<> {
         for (std::size_t i = 0; i < 2000; ++i)
             co_await yield();
 
-        scheduler.stop();
+        ctx.stop();
         co_return;
     };
 
-    scheduler.schedule(task());
-    scheduler.start();
+    ctx.schedule(task());
+    ctx.start();
 }
 
 TEST_CASE("[Task] Sleeping") {
-    Scheduler scheduler{1};
+    IoContext ctx{1};
 
     auto task = [&]() -> Task<> {
         for (std::size_t i = 0; i < 3; ++i) {
@@ -140,9 +140,9 @@ TEST_CASE("[Task] Sleeping") {
             CHECK(end - start >= 0s);
         }
 
-        scheduler.stop();
+        ctx.stop();
     };
 
-    scheduler.schedule(task());
-    scheduler.start();
+    ctx.schedule(task());
+    ctx.start();
 }

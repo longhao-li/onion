@@ -8,6 +8,144 @@
 namespace onion {
 namespace detail {
 
+/// \class PromiseBase
+/// \brief
+///   Base class for \c Promise types.
+class PromiseBase {
+public:
+    /// \class FinalAwaitable
+    /// \brief
+    ///   For internal usage. Maintain the coroutine call stack frames and resume the caller
+    ///   coroutine.
+    class [[nodiscard]] FinalAwaitable {
+    public:
+        /// \brief
+        ///   C++20 coroutine API. Always enter \c await_suspend to maintain the coroutine call
+        ///   stack.
+        /// \return
+        ///   This method always returns \c false.
+        [[nodiscard]]
+        static constexpr auto await_ready() noexcept -> bool {
+            return false;
+        }
+
+        /// \brief
+        ///   C++20 coroutine API. Maintain the coroutine call stack and resume the caller
+        ///   coroutine.
+        /// \tparam T
+        ///   Promise type of the current coroutine to be finalized.
+        /// \param current
+        ///   Coroutine handle of the current coroutine to be finalized.
+        /// \return
+        ///   Coroutine handle of the caller coroutine if \p current is not at the stack bottom.
+        ///   Otherwise, return a noop coroutine handle.
+        template <typename T>
+        static auto await_suspend(std::coroutine_handle<T> current) noexcept
+            -> std::coroutine_handle<> {
+            std::coroutine_handle<> caller = static_cast<PromiseBase &>(current.promise()).m_caller;
+            return caller ? caller : std::noop_coroutine();
+        }
+
+        /// \brief
+        ///   C++20 coroutine API. Called when the suspended coroutine is resumed. Unreachable.
+        static constexpr auto await_resume() noexcept -> void {}
+    };
+
+public:
+    /// \brief
+    ///   Create a \c PromiseBase object.
+    PromiseBase() noexcept : m_coroutine{}, m_caller{}, m_stackBottom{}, m_exception{} {}
+
+    /// \brief
+    ///   \c PromiseBase is not copyable.
+    PromiseBase(const PromiseBase &other) = delete;
+
+    /// \brief
+    ///   \c PromiseBase is not movable.
+    PromiseBase(PromiseBase &&other) = delete;
+
+    /// \brief
+    ///   Destroy this \c PromiseBase object.
+    ~PromiseBase() noexcept = default;
+
+    /// \brief
+    ///   \c PromiseBase is not copyable.
+    auto operator=(const PromiseBase &other) = delete;
+
+    /// \brief
+    ///   \c PromiseBase is not movable.
+    auto operator=(PromiseBase &&other) = delete;
+
+    /// \brief
+    ///   C++20 coroutine API. \c Task should always be suspended once it is created.
+    /// \return
+    ///   This method always returns an empty \c std::suspend_always object.
+    [[nodiscard]]
+    static constexpr auto initial_suspend() noexcept -> std::suspend_always {
+        return {};
+    }
+
+    /// \brief
+    ///   C++20 coroutine API. Maintain the coroutine call stack and resume the caller coroutine.
+    /// \return
+    ///   This method always returns an empty \c FinalAwaitable object.
+    [[nodiscard]]
+    static constexpr auto final_suspend() noexcept -> FinalAwaitable {
+        return {};
+    }
+
+    /// \brief
+    ///   For internal usage. C++20 coroutine API. Capture and store the exception thrown by current
+    ///   coroutine.
+    auto unhandled_exception() noexcept -> void {
+        m_exception = std::current_exception();
+    }
+
+    /// \brief
+    ///   Get coroutine handle of this promise.
+    ///
+    ///   Maybe we could directly cast \c std::coroutine_handle<> into \c
+    ///   std::coroutine_handle<PromiseBase> to get promise object, but the C++ reference did not
+    ///   mention this. So we cache coroutine handle for promise object in the promise object
+    ///   itself.
+    /// \return
+    ///   The coroutine handle of this promise.
+    [[nodiscard]]
+    auto coroutine() const noexcept -> std::coroutine_handle<> {
+        return m_coroutine;
+    }
+
+    /// \brief
+    ///   Get the stack bottom coroutine handle. For the stack bottom coroutine itself, this method
+    ///   returns the handle to itself.
+    /// \return
+    ///   The stack bottom coroutine handle.
+    [[nodiscard]]
+    auto stackBottom() const noexcept -> std::coroutine_handle<> {
+        return m_stackBottom;
+    }
+
+    template <typename>
+    friend class TaskAwaitable;
+
+protected:
+    /// \brief
+    ///   Coroutine handle to current coroutine.
+    std::coroutine_handle<> m_coroutine;
+
+    /// \brief
+    ///   Coroutine handle to the caller coroutine.
+    std::coroutine_handle<> m_caller;
+
+    /// \brief
+    ///   Coroutine handle to the stack bottom of the current coroutine.
+    std::coroutine_handle<> m_stackBottom;
+
+    /// \brief
+    ///   Exception thrown by current coroutine.
+    std::exception_ptr m_exception;
+};
+
 /// \class Promise
 /// \tparam T
 ///   Return type of the corresponding \c Task object.
@@ -15,6 +153,66 @@ namespace detail {
 ///   Promise type for \c Task to store coroutine states and result of the coroutine.
 template <typename T>
 class Promise;
+
+/// \class TaskAwaitable
+/// \tparam T
+///   Return type of the coroutine to be awaited.
+/// \brief
+///   For internal usage. Helper awaitable type for \c Task objects to do coroutine context switch.
+template <typename T>
+class TaskAwaitable {
+public:
+    using value_type   = T;
+    using promise_type = Promise<T>;
+
+    /// \brief
+    ///   For internal usage. Create a \c TaskAwaitable object for the given coroutine. Awaiting
+    ///   this object will suspend current coroutine and switch to the given coroutine.
+    /// \param coroutine
+    ///   Coroutine handle of the coroutine to be executed. This coroutine should not be null.
+    explicit TaskAwaitable(std::coroutine_handle<promise_type> coroutine) noexcept
+        : m_coroutine{coroutine} {}
+
+    /// \brief
+    ///   C++20 coroutine API. Always enter \c await_suspend to maintain the coroutine call stack.
+    /// \return
+    ///   This method always returns \c false.
+    [[nodiscard]]
+    static constexpr auto await_ready() noexcept -> bool {
+        return false;
+    }
+
+    /// \brief
+    ///   For internal usage. C++20 coroutine standard API. Suspend current coroutine and start the
+    ///   callee coroutine.
+    /// \tparam U
+    ///   Promise type of the caller coroutine.
+    /// \param caller
+    ///   Handle to the caller coroutine to be suspended.
+    /// \return
+    ///   Handle to the callee coroutine to be resumed.
+    template <typename U>
+    auto await_suspend(std::coroutine_handle<U> caller) noexcept
+        -> std::coroutine_handle<promise_type> {
+        auto &promise = static_cast<PromiseBase &>(m_coroutine.promise());
+
+        promise.m_caller      = caller;
+        promise.m_stackBottom = caller.promise().m_stackBottom;
+
+        return m_coroutine;
+    }
+
+    /// \brief
+    ///   For internal usage. C++20 coroutine standard API. Get the result of the callee coroutine.
+    /// \return
+    ///   The result of the callee coroutine.
+    auto await_resume() const -> decltype(auto) {
+        return std::move(m_coroutine.promise()).result();
+    }
+
+private:
+    std::coroutine_handle<promise_type> m_coroutine;
+};
 
 } // namespace detail
 
@@ -145,244 +343,22 @@ public:
         return m_coroutine == nullptr;
     }
 
+    /// \brief
+    ///   Suspend the caller coroutine and start this \c Task coroutine.
+    /// \return
+    ///   An awaitable object to suspend the caller coroutine and start this \c Task coroutine.
+    [[nodiscard]]
+    auto operator co_await() const noexcept -> detail::TaskAwaitable<value_type> {
+        return detail::TaskAwaitable<value_type>{m_coroutine};
+    }
+
 private:
     /// \brief
     ///   Coroutine handle for this task.
     std::coroutine_handle<promise_type> m_coroutine;
 };
 
-} // namespace onion
-
-namespace onion::detail {
-
-/// \class PromiseBase
-/// \brief
-///   Base class for \c Promise types.
-class PromiseBase {
-public:
-    /// \class FinalAwaitable
-    /// \brief
-    ///   For internal usage. Maintain the coroutine call stack frames and resume the caller
-    ///   coroutine.
-    class [[nodiscard]] FinalAwaitable {
-    public:
-        /// \brief
-        ///   C++20 coroutine API. Always enter \c await_suspend to maintain the coroutine call
-        ///   stack.
-        /// \return
-        ///   This method always returns \c false.
-        [[nodiscard]]
-        static constexpr auto await_ready() noexcept -> bool {
-            return false;
-        }
-
-        /// \brief
-        ///   C++20 coroutine API. Maintain the coroutine call stack and resume the caller
-        ///   coroutine.
-        /// \tparam T
-        ///   Promise type of the current coroutine to be finalized.
-        /// \param current
-        ///   Coroutine handle of the current coroutine to be finalized.
-        /// \return
-        ///   Coroutine handle of the caller coroutine if \p current is not at the stack bottom.
-        ///   Otherwise, return a noop coroutine handle.
-        template <typename T>
-        static auto await_suspend(std::coroutine_handle<T> current) noexcept
-            -> std::coroutine_handle<> {
-            std::coroutine_handle<> caller = static_cast<PromiseBase &>(current.promise()).m_caller;
-            return caller ? caller : std::noop_coroutine();
-        }
-
-        /// \brief
-        ///   C++20 coroutine API. Called when the suspended coroutine is resumed. Unreachable.
-        static constexpr auto await_resume() noexcept -> void {}
-    };
-
-    /// \class TaskAwaitable
-    /// \tparam T
-    ///   Return type of the coroutine to be awaited.
-    /// \brief
-    ///   For internal usage. Helper awaitable type for \c Task objects to do coroutine context
-    ///   switch.
-    template <typename T>
-    class [[nodiscard]] TaskAwaitable {
-    public:
-        using value_type   = T;
-        using promise_type = Promise<T>;
-
-        /// \brief
-        ///   For internal usage. Create a \c TaskAwaitable object for the given coroutine. Awaiting
-        ///   this object will suspend current coroutine and switch to the given coroutine.
-        /// \param coroutine
-        ///   Coroutine handle of the coroutine to be executed. This coroutine should not be null.
-        explicit TaskAwaitable(std::coroutine_handle<promise_type> coroutine) noexcept
-            : m_coroutine{coroutine} {}
-
-        /// \brief
-        ///   C++20 coroutine API. Always enter \c await_suspend to maintain the coroutine call
-        ///   stack.
-        /// \return
-        ///   This method always returns \c false.
-        [[nodiscard]]
-        static constexpr auto await_ready() noexcept -> bool {
-            return false;
-        }
-
-        /// \brief
-        ///   For internal usage. C++20 coroutine standard API. Suspend current coroutine and start
-        ///   the callee coroutine.
-        /// \tparam U
-        ///   Promise type of the caller coroutine.
-        /// \param caller
-        ///   Handle to the caller coroutine to be suspended.
-        /// \return
-        ///   Handle to the callee coroutine to be resumed.
-        template <typename U>
-        auto await_suspend(std::coroutine_handle<U> caller) noexcept
-            -> std::coroutine_handle<promise_type> {
-            auto &promise = static_cast<PromiseBase &>(m_coroutine.promise());
-
-            promise.m_caller      = caller;
-            promise.m_stackBottom = caller.promise().m_stackBottom;
-
-            return m_coroutine;
-        }
-
-        /// \brief
-        ///   For internal usage. C++20 coroutine standard API. Get the result of the callee
-        ///   coroutine.
-        /// \return
-        ///   The result of the callee coroutine.
-        auto await_resume() const -> decltype(auto) {
-            return std::move(m_coroutine.promise()).result();
-        }
-
-    private:
-        std::coroutine_handle<promise_type> m_coroutine;
-    };
-
-public:
-    /// \brief
-    ///   Create a \c PromiseBase object.
-    PromiseBase() noexcept : m_coroutine{}, m_caller{}, m_stackBottom{}, m_exception{} {}
-
-    /// \brief
-    ///   \c PromiseBase is not copyable.
-    PromiseBase(const PromiseBase &other) = delete;
-
-    /// \brief
-    ///   \c PromiseBase is not movable.
-    PromiseBase(PromiseBase &&other) = delete;
-
-    /// \brief
-    ///   Destroy this \c PromiseBase object.
-    ~PromiseBase() noexcept = default;
-
-    /// \brief
-    ///   \c PromiseBase is not copyable.
-    auto operator=(const PromiseBase &other) = delete;
-
-    /// \brief
-    ///   \c PromiseBase is not movable.
-    auto operator=(PromiseBase &&other) = delete;
-
-    /// \brief
-    ///   C++20 coroutine API. \c Task should always be suspended once it is created.
-    /// \return
-    ///   This method always returns an empty \c std::suspend_always object.
-    [[nodiscard]]
-    static constexpr auto initial_suspend() noexcept -> std::suspend_always {
-        return {};
-    }
-
-    /// \brief
-    ///   C++20 coroutine API. Maintain the coroutine call stack and resume the caller coroutine.
-    /// \return
-    ///   This method always returns an empty \c FinalAwaitable object.
-    [[nodiscard]]
-    static constexpr auto final_suspend() noexcept -> FinalAwaitable {
-        return {};
-    }
-
-    /// \brief
-    ///   For internal usage. C++20 coroutine API. Capture and store the exception thrown by current
-    ///   coroutine.
-    auto unhandled_exception() noexcept -> void {
-        m_exception = std::current_exception();
-    }
-
-    /// \brief
-    ///   Get coroutine handle of this promise.
-    ///
-    ///   Maybe we could directly cast \c std::coroutine_handle<> into \c
-    ///   std::coroutine_handle<PromiseBase> to get promise object, but the C++ reference did not
-    ///   mention this. So we cache coroutine handle for promise object in the promise object
-    ///   itself.
-    /// \return
-    ///   The coroutine handle of this promise.
-    [[nodiscard]]
-    auto coroutine() const noexcept -> std::coroutine_handle<> {
-        return m_coroutine;
-    }
-
-    /// \brief
-    ///   Get the stack bottom coroutine handle. For the stack bottom coroutine itself, this method
-    ///   returns the handle to itself.
-    /// \return
-    ///   The stack bottom coroutine handle.
-    [[nodiscard]]
-    auto stackBottom() const noexcept -> std::coroutine_handle<> {
-        return m_stackBottom;
-    }
-
-    /// \brief
-    ///   C++20 coroutine API. Suspend current coroutine and switch to the given coroutine.
-    /// \tparam T
-    ///   Promise type of the coroutine to be awaited.
-    /// \param coroutine
-    ///   Coroutine handle of the coroutine to be awaited.
-    /// \return
-    ///   \c TaskAwaitable object to suspend current coroutine and switch to the given coroutine.
-    template <typename T>
-    auto await_transform(const Task<T> &task) const noexcept -> TaskAwaitable<T> {
-        return TaskAwaitable<T>{task.coroutine()};
-    }
-
-    /// \brief
-    ///   C++20 coroutine API. Suspend current coroutine and execute the given awaitable object.
-    /// \tparam T
-    ///   Type of the awaitable object.
-    /// \param awaitable
-    ///   Awaitable object to be executed.
-    /// \return
-    ///   The given awaitable object.
-    template <typename T>
-        requires requires(T awaitable, std::coroutine_handle<> coroutine) {
-            { awaitable.await_ready() } -> std::same_as<bool>;
-            { awaitable.await_suspend(coroutine) };
-            { awaitable.await_resume() };
-        }
-    auto await_transform(T &&awaitable) const noexcept -> decltype(auto) {
-        return std::forward<T>(awaitable);
-    }
-
-protected:
-    /// \brief
-    ///   Coroutine handle to current coroutine.
-    std::coroutine_handle<> m_coroutine;
-
-    /// \brief
-    ///   Coroutine handle to the caller coroutine.
-    std::coroutine_handle<> m_caller;
-
-    /// \brief
-    ///   Coroutine handle to the stack bottom of the current coroutine.
-    std::coroutine_handle<> m_stackBottom;
-
-    /// \brief
-    ///   Exception thrown by current coroutine.
-    std::exception_ptr m_exception;
-};
+namespace detail {
 
 /// \class Promise
 /// \tparam T
@@ -523,4 +499,5 @@ public:
     }
 };
 
-} // namespace onion::detail
+} // namespace detail
+} // namespace onion

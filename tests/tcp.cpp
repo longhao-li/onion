@@ -1,4 +1,4 @@
-#include "onion/tcp.hpp"
+#include "onion/socket.hpp"
 
 #include <doctest/doctest.h>
 
@@ -10,7 +10,7 @@ TEST_CASE("[TcpListener] TCP ping-pong") {
     constexpr std::size_t PacketSize  = 1024;
     constexpr std::size_t BufferSize  = 1024;
 
-    Scheduler scheduler;
+    IoContext ctx;
     std::atomic_bool serverReady{false};
 
     auto server = [&](TcpStream stream) -> Task<> {
@@ -46,7 +46,7 @@ TEST_CASE("[TcpListener] TCP ping-pong") {
         auto stream = co_await srv.acceptAsync();
         CHECK(stream.has_value());
 
-        schedule(server(*std::move(stream)));
+        co_await schedule(server(*std::move(stream)));
     };
 
     auto client = [&](InetAddress address) -> Task<> {
@@ -83,12 +83,12 @@ TEST_CASE("[TcpListener] TCP ping-pong") {
             }
         }
 
-        scheduler.stop();
+        ctx.stop();
     };
 
     InetAddress address{Ipv6Loopback, 23333};
-    scheduler.schedule(listener(address));
-    scheduler.schedule(client(address));
+    ctx.schedule(listener(address));
+    ctx.schedule(client(address));
 
-    scheduler.start();
+    ctx.start();
 }

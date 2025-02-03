@@ -9,11 +9,10 @@ endif()
 
 # CMake build options.
 option(ONION_BUILD_SHARED_LIBS "Build onion as shared library." OFF)
-option(ONION_WARNINGS_AS_ERRORS "Treat warnings as errors." ON)
+option(ONION_WARNINGS_AS_ERRORS "Treat warnings as errors." OFF)
 option(ONION_ENABLE_LTO "Enable link-time optimization for onion shared library." OFF)
 option(ONION_ENABLE_ASAN "Enable address sanitizer for onion. Cannot be enabled with LTO" OFF)
 option(ONION_BUILD_TESTS "Build onion tests." OFF)
-option(ONION_BUILD_EXAMPLES "Build onion examples." OFF)
 
 # Build onion library.
 file(GLOB_RECURSE ONION_HEADER_FILES "include/*.hpp")
@@ -81,13 +80,8 @@ if(MSVC)
 
     # Enable address sanitizer.
     if(ONION_ENABLE_ASAN)
-        check_cxx_compiler_flag(/fsanitize=address ONION_CXX_HAS_ASAN)
-        if(ONION_CXX_HAS_ASAN)
-            target_compile_options(onion PRIVATE /fsanitize=address)
-            target_link_libraries(onion PRIVATE /fsanitize=address)
-        else()
-            message(WARNING "Address sanitizer is enabled but not supported.")
-        endif()
+        target_compile_options(onion PRIVATE /fsanitize=address)
+        target_link_libraries(onion PRIVATE /fsanitize=address)
     endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
     target_compile_options(onion PRIVATE -Wall -Wextra -Woverloaded-virtual -Wold-style-cast)

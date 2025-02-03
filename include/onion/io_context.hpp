@@ -3,67 +3,59 @@
 #include "task.hpp"
 
 #include <atomic>
-#include <chrono>
+#include <mutex>
 #include <queue>
-#include <random>
-#include <span>
-#include <vector>
 
-namespace onion::detail {
+namespace onion {
+namespace detail {
 
-/// \class SchedulerTaskQueue
+/// \class IoContextWorkerTaskQueue
 /// \brief
-///   For internal usage. Work-stealing queue for tasks in scheduler.
-class SchedulerTaskQueue {
+///   For internal usage. Work-stealing queue for tasks in worker.
+class IoContextWorkerTaskQueue {
 public:
     /// \brief
     ///   Initialize this work-stealing queue with the specified size.
     /// \param capacity
     ///   Expected maximum number of tasks that could be stored in this queue. This value will
     ///   always be rounded up to the block size.
-    ONION_API explicit SchedulerTaskQueue(std::size_t capacity) noexcept;
+    ONION_API explicit IoContextWorkerTaskQueue(std::size_t capacity) noexcept;
 
     /// \brief
-    ///   Copy constructor of \c SchedulerTaskQueue. Copying \c SchedulerTaskQueue is not concurrent
-    ///   safe.
-    /// \param other
-    ///   The \c SchedulerTaskQueue to copy from.
-    ONION_API SchedulerTaskQueue(const SchedulerTaskQueue &other) noexcept;
+    ///   \c IoContextWorkerTaskQueue is not copyable.
+    IoContextWorkerTaskQueue(const IoContextWorkerTaskQueue &) = delete;
 
     /// \brief
-    ///   Move constructor of \c SchedulerTaskQueue. Moving \c SchedulerTaskQueue is not concurrent
-    ///   safe.
+    ///   Move constructor of \c IoContextWorkerTaskQueue.
     /// \param[inout] other
-    ///   The \c SchedulerTaskQueue to move from. The moved \c SchedulerTaskQueue will be in a valid
-    ///   but undefined state.
-    ONION_API SchedulerTaskQueue(SchedulerTaskQueue &&other) noexcept;
+    ///   The \c IoContextWorkerTaskQueue object to be moved. The moved \c IoContextWorkerTaskQueue
+    ///   object will be in a valid but undefined state.
+    IoContextWorkerTaskQueue(IoContextWorkerTaskQueue &&other) noexcept
+        : m_mask{other.m_mask},
+          m_ownerIndex{other.m_ownerIndex.load(std::memory_order_relaxed)},
+          m_thiefIndex{other.m_thiefIndex.load(std::memory_order_relaxed)},
+          m_blocks{other.m_blocks} {
+        other.m_blocks = nullptr;
+    }
 
     /// \brief
     ///   Destroy this work-stealing queue and release memory.
-    ONION_API ~SchedulerTaskQueue() noexcept;
+    ONION_API ~IoContextWorkerTaskQueue() noexcept;
 
     /// \brief
-    ///   Copy assignment operator of \c SchedulerTaskQueue. Copying \c SchedulerTaskQueue is not
-    ///   concurrent safe.
-    ///
-    ///   Self-assignment is allowed but not recommended.
-    /// \param other
-    ///   The \c SchedulerTaskQueue to copy from.
-    /// \return
-    ///   Reference to this \c SchedulerTaskQueue.
-    ONION_API auto operator=(const SchedulerTaskQueue &other) noexcept -> SchedulerTaskQueue &;
+    ///   \c IoContextWorkerTaskQueue is not copyable.
+    auto operator=(const IoContextWorkerTaskQueue &other) = delete;
 
     /// \brief
-    ///   Move assignment operator of \c SchedulerTaskQueue. Moving \c SchedulerTaskQueue is not
-    ///   concurrent safe.
-    ///
-    ///   Self-assignment is allowed but not recommended.
-    /// \param[inout] other
-    ///   The \c SchedulerTaskQueue to move from. The moved \c SchedulerTaskQueue will be in a valid
-    ///   but undefined state.
+    ///   \c IoContextWorkerTaskQueue is not move-assignable.
+    auto operator=(IoContextWorkerTaskQueue &&other) = delete;
+
+    /// \brief
+    ///  Get the approximate size in use of the queue.
     /// \return
-    ///   Reference to this \c SchedulerTaskQueue.
-    ONION_API auto operator=(SchedulerTaskQueue &&other) noexcept -> SchedulerTaskQueue &;
+    ///   The approximate size in use of the queue.
+    [[nodiscard]]
+    ONION_API auto approximateSize() const noexcept -> std::size_t;
 
     /// \brief
     ///   Try to push a task into the queue.
@@ -120,27 +112,37 @@ private:
     auto advanceStealIndex(std::size_t current) noexcept -> bool;
 
 private:
-    /// \class TaskBlock
-    /// \brief
-    ///   Block of tasks in the work-stealing queue.
-    class TaskBlock;
-
     std::size_t m_mask;
     std::atomic_size_t m_ownerIndex;
     std::atomic_size_t m_thiefIndex;
-    std::vector<TaskBlock> m_blocks;
+    void *m_blocks;
 };
 
-} // namespace onion::detail
+} // namespace detail
 
-namespace onion {
-
-/// \class Scheduler
+/// \class IoContext
 /// \brief
-///   Scheduler for asynchronous tasks. Static thread pool is used.
-class Scheduler;
+///   The context for asynchronous I/O operations. Static thread pool is used for I/O operations.
+class IoContext;
+
+/// \class ScheduleAwaitable
+/// \brief
+///   Awaitable object for scheduling a task to be executed in current worker.
+class [[nodiscard]] ScheduleAwaitable;
+
+/// \class YieldAwaitable
+/// \brief
+///   Awaitable object for yielding current coroutine so that the worker can schedule another
+///   coroutine immediately.
+class [[nodiscard]] YieldAwaitable;
+
+/// \class SleepAwaitable
+/// \brief
+///   Awaitable object for suspending current coroutine for a while.
+class [[nodiscard]] SleepAwaitable;
 
 namespace detail {
+
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
 /// \struct Overlapped
 /// \brief
@@ -171,53 +173,70 @@ struct Overlapped {
 };
 #endif
 
-/// \class SchedulerWorker
+/// \class IoContextWorker
 /// \brief
-///   Worker for \c Scheduler. Workers are dispatched by \c Scheduler one per thread to execute
-///   tasks.
-class SchedulerWorker {
+///   Worker class for \c IoContext.
+class IoContextWorker {
 public:
     /// \brief
-    ///   Create a new worker for the given scheduler and initialize the IO multiplexer. \c IOCP
+    ///   Create a new worker for the given IO context and initialize the IO multiplexer. \c IOCP
     ///   will be used for Windows, \c io_uring will be used for Linux and \c kqueue will be used
     ///   for BSD.
-    /// \param[in] scheduler
-    ///   Owner scheduler of this worker.
-    /// \param index
-    ///   Index of this worker in the owner scheduler.
+    /// \param[in] context
+    ///   Owner context of this worker.
     /// \throws std::system_error
     ///   Thrown if failed to create IO multiplexer.
-    ONION_API SchedulerWorker(Scheduler &scheduler, std::size_t index);
+    ONION_API explicit IoContextWorker(IoContext &context);
 
     /// \brief
-    ///   \c SchedulerWorker is not copyable.
-    SchedulerWorker(const SchedulerWorker &other) = delete;
+    ///   \c IoContextWorker is not copyable.
+    IoContextWorker(const IoContextWorker &other) = delete;
 
     /// \brief
-    ///   Move constructor of \c SchedulerWorker. This is implemented so that \c SchedulerWorker
+    ///   Move constructor of \c IoContextWorker. This is implemented so that \c IoContextWorker
     ///   objects could be managed in \c std::vector. This constructor should not be used directly.
     /// \param[inout] other
     ///   The worker to move from. The moved worker will be in a valid but undefined state.
-    ONION_API SchedulerWorker(SchedulerWorker &&other) noexcept;
+    ONION_API IoContextWorker(IoContextWorker &&other) noexcept;
 
     /// \brief
-    ///   Destroy this worker. The worker must be stopped before destroying.
-    ONION_API ~SchedulerWorker() noexcept;
+    ///   Destroy this worker and release resources. This worker must be stopped before destruction.
+    ONION_API ~IoContextWorker() noexcept;
 
     /// \brief
-    ///   \c SchedulerWorker is not copyable.
-    auto operator=(const SchedulerWorker &other) = delete;
+    ///   \c IoContextWorker is not copyable.
+    auto operator=(const IoContextWorker &other) = delete;
 
     /// \brief
-    ///   \c SchedulerWorker is not move-assignable.
-    auto operator=(SchedulerWorker &&other) = delete;
+    ///   \c IoContextWorker is not move-assignable.
+    auto operator=(IoContextWorker &&other) = delete;
+
+    /// \brief
+    ///   Get the owner \c IoContext of this worker.
+    /// \return
+    ///   Reference to the owner \c IoContext of this worker.
+    [[nodiscard]]
+    auto context() const noexcept -> IoContext & {
+        return *m_context;
+    }
+
+    /// \brief
+    ///   Checks if this worker is running.
+    /// \retval true
+    ///   This worker is running.
+    /// \retval false
+    ///   This worker is not running.
+    [[nodiscard]]
+    auto isRunning() const noexcept -> bool {
+        return m_isRunning.load(std::memory_order_relaxed);
+    }
 
     /// \brief
     ///   Start this worker to process IO events. This method will block current thread until the
     ///   worker is stopped.
     ///
-    ///   You are not supposed to call this method in multiple threads. \c std::terminate will be
-    ///   called if hazard is detected.
+    ///   It is OK to call this method for multiple-times in different threads at the same time, but
+    ///   only one of them will start the worker.
     ONION_API auto start() noexcept -> void;
 
     /// \brief
@@ -226,8 +245,7 @@ public:
     ONION_API auto stop() noexcept -> void;
 
     /// \brief
-    ///   Schedule a task in this worker. This method is not concurrent safe and could only be
-    ///   called in owner thread.
+    ///   Schedule a task in this worker. This method is concurrent safe.
     /// \tparam T
     ///   Type of the result of the task.
     /// \param task
@@ -236,7 +254,15 @@ public:
     template <typename T>
     auto schedule(Task<T> task) noexcept -> void {
         auto coroutine = task.detach();
-        this->schedule(static_cast<PromiseBase &>(coroutine.promise()));
+
+        { // Push the task into the task queue.
+            std::lock_guard<std::mutex> lock{m_localTasksMutex};
+            m_localTasks.push_back(&coroutine.promise());
+            m_hasLocalTask.store(true, std::memory_order_relaxed);
+        }
+
+        // Handle the scheduled task as soon as possible.
+        wakeUp();
     }
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
@@ -245,16 +271,16 @@ public:
     /// \return
     ///   IOCP handle of this worker.
     [[nodiscard]]
-    auto ioMultiplexer() const noexcept -> void * {
+    auto ioCompletionPort() const noexcept -> void * {
         return m_iocp;
     }
 #elif defined(__linux) || defined(__linux__)
     /// \brief
-    ///   For internal usage. Get \c io_uring of this worker.
+    ///   For internal usage. Get pointer to struct \c io_uring of this worker.
     /// \return
-    ///   Pointer to liburing \c io_uring struct of this worker.
+    ///   Pointer to \c io_uring of this worker.
     [[nodiscard]]
-    auto ioMultiplexer() const noexcept -> void * {
+    auto uring() const noexcept -> void * {
         return m_uring;
     }
 #endif
@@ -262,23 +288,43 @@ public:
     /// \brief
     ///   Get worker for current thread.
     /// \return
-    ///   Reference to the worker for current thread. The return value is \c nullptr if current
-    ///   thread is not a worker thread.
+    ///   Pointer to worker for current thread. The return value is \c nullptr if current thread
+    ///   is not a worker thread.
     [[nodiscard]]
-    ONION_API static auto threadWorker() noexcept -> SchedulerWorker *;
+    ONION_API static auto current() noexcept -> IoContextWorker *;
 
 private:
     /// \brief
-    ///   For internal usage. Schedule a task in this worker. This method is not concurrent safe and
-    ///   could only be called in owner thread.
+    ///   For internal usage. Schedule a task in this worker. This method is not concurrent safe.
     /// \param[in] promise
     ///   Promise of the task to be scheduled.
     auto schedule(PromiseBase &promise) noexcept -> void {
-        if (!m_taskQueue.tryPush(&promise)) [[unlikely]]
+        if (!m_taskQueue.tryPush(&promise)) [[unlikely]] {
+            std::lock_guard<std::mutex> lock{m_localTasksMutex};
             m_localTasks.push_back(&promise);
+            m_hasLocalTask.store(true, std::memory_order_relaxed);
+        }
     }
 
-    friend class YieldAwaitable;
+    /// \brief
+    ///   Wake up the IO multiplexer of this worker. This method is concurrent safe.
+    ONION_API auto wakeUp() noexcept -> void;
+
+    friend class ::onion::ScheduleAwaitable;
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    /// \brief
+    ///   For internal usage. For Win32 only. Schedule a task in this worker with timeout. The
+    ///   scheduled task will be executed after the timeout. This method is not concurrent safe and
+    ///   could only be called in owner thread.
+    /// \param[in] promise
+    ///   Pointer to the promise of the task to be scheduled.
+    /// \param timeout
+    ///   Timeout in milliseconds.
+    ONION_API auto schedule(PromiseBase &promise, std::uint32_t timeout) noexcept -> void;
+
+    friend class ::onion::SleepAwaitable;
+#endif
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     /// \struct TimeoutEvent
@@ -295,18 +341,6 @@ private:
             return expire > other.expire;
         }
     };
-
-    /// \brief
-    ///   For internal usage. For Win32 only. Schedule a task in this worker with timeout. The
-    ///   scheduled task will be executed after the timeout. This method is not concurrent safe and
-    ///   could only be called in owner thread.
-    /// \param[in] promise
-    ///   Pointer to the promise of the task to be scheduled.
-    /// \param timeout
-    ///   Timeout in milliseconds.
-    ONION_API auto schedule(PromiseBase &promise, std::uint32_t timeout) noexcept -> void;
-
-    friend class SleepAwaitable;
 #endif
 
 private:
@@ -315,17 +349,8 @@ private:
     std::atomic_bool m_isRunning;
 
     /// \brief
-    ///   Owner scheduler of this worker. Not null.
-    Scheduler *m_scheduler;
-
-    /// \brief
-    ///   Index of this worker in the scheduler. This is used for randomly choosing a worker to
-    ///   steal tasks. It is guaranteed that indices starts from 0 and are continuous.
-    std::size_t m_index;
-
-    /// \brief
-    ///   Random number generator used to random select a worker for task stealing.
-    std::minstd_rand m_random;
+    ///   Owner \c IoContext of this worker.
+    IoContext *m_context;
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     /// \brief
@@ -341,100 +366,101 @@ private:
     std::priority_queue<TimeoutEvent> m_timeouts;
 #elif defined(__linux) || defined(__linux__)
     /// \brief
-    ///   Pointer to \c io_uring object.
+    ///   Pointer to \c io_uring for this worker.
     void *m_uring;
 
     /// \brief
-    ///   Event file descriptor that is used to wake up \c io_uring.
+    ///   Wake up eventfd for this worker.
     int m_wakeUp;
 #endif
 
     /// \brief
     ///   Task queue for this worker.
-    SchedulerTaskQueue m_taskQueue;
+    detail::IoContextWorkerTaskQueue m_taskQueue;
 
     /// \brief
-    ///   Overflow task queue for this worker. This queue could only be used by the owner worker.
+    ///   Mutex for local tasks.
+    std::mutex m_localTasksMutex;
+
+    /// \brief
+    ///   Local tasks for this worker.
     std::vector<PromiseBase *> m_localTasks;
+
+    /// \brief
+    ///   A flag that indicates whether this worker has local tasks.
+    std::atomic_bool m_hasLocalTask;
 };
 
 } // namespace detail
 
-/// \class Scheduler
+/// \class IoContext
 /// \brief
-///   Scheduler for asynchronous tasks. Static thread pool is used.
-class Scheduler {
+///   The context for asynchronous I/O operations. Static thread pool is used for I/O operations.
+class IoContext {
 public:
     /// \brief
-    ///   Create a new \c Scheduler with workers. Number of workers will be equal to the number of
-    ///   hardware threads.
+    ///   Create a new \c IoContext with workers. Number of workers will be equal to the
+    ///   number of hardware threads.
     /// \throws std::system_error
     ///   Thrown if any worker failed to initialize IO multiplexer.
-    ONION_API Scheduler();
+    ONION_API IoContext();
 
     /// \brief
-    ///   Create a new \c Scheduler with specified number of workers.
+    ///   Create a new \c IoContext with specified number of workers.
     /// \param count
     ///   Expected number of workers to be created. Number of workers will be determined by the
     ///   number of hardware threads if this value is 0.
     /// \throws std::system_error
     ///   Thrown if any worker failed to initialize IO multiplexer.
-    ONION_API explicit Scheduler(std::size_t count);
+    ONION_API explicit IoContext(std::size_t count);
 
     /// \brief
-    ///   \c Scheduler is not copyable.
-    Scheduler(const Scheduler &other) = delete;
+    ///   \c IoContext is not copyable.
+    IoContext(const IoContext &other) = delete;
 
     /// \brief
-    ///   \c Scheduler is not movable.
-    Scheduler(Scheduler &&other) = delete;
+    ///   \c IoContext is not movable.
+    IoContext(IoContext &&other) = delete;
 
     /// \brief
-    ///   Destroy this \c Scheduler. All workers must be stopped before destroying.
-    ONION_API ~Scheduler() noexcept;
+    ///   Destroy this \c IoContext. All workers must be stopped before destroying.
+    ONION_API ~IoContext() noexcept;
 
     /// \brief
-    ///   \c Scheduler is not copyable.
-    auto operator=(const Scheduler &other) = delete;
+    ///   \c IoContext is not copyable.
+    auto operator=(const IoContext &other) = delete;
 
     /// \brief
-    ///   \c Scheduler is not movable.
-    auto operator=(Scheduler &&other) = delete;
+    ///   \c IoContext is not movable.
+    auto operator=(IoContext &&other) = delete;
 
     /// \brief
-    ///   Get number of workers in this \c Scheduler.
+    ///   Get number of workers in this \c IoContext.
     /// \return
-    ///   Number of workers in this \c Scheduler.
+    ///   Number of workers in this \c IoContext.
     [[nodiscard]]
     auto size() const noexcept -> std::size_t {
         return m_workers.size();
     }
 
     /// \brief
-    ///   Get all workers in this \c Scheduler.
-    /// \return
-    ///   Span of all workers in this \c Scheduler.
-    [[nodiscard]]
-    auto workers() noexcept -> std::span<detail::SchedulerWorker> {
-        return m_workers;
-    }
-
-    /// \brief
-    ///   Start all workers in this \c Scheduler. This method will block current thread until all
+    ///   Start all workers in this \c IoContext. This method will block current thread until all
     ///   workers are stopped.
     ///
-    ///   You are not supposed to call this method for multiple times. \c std::terminate will be
-    ///   called if hazard is detected.
+    ///   It is OK to call this method for multiple-times in different threads at the same time, but
+    ///   only one of them will start the workers.
     ONION_API auto start() noexcept -> void;
 
     /// \brief
-    ///   Request all workers in this \c Scheduler to stop. This method only sends a stop request to
+    ///   Request all workers in this \c IoContext to stop. This method only sends a stop request to
     ///   all workers and returns immediately. This method is concurrent safe.
-    ONION_API auto stop() noexcept -> void;
+    auto stop() noexcept -> void {
+        for (auto &worker : m_workers)
+            worker.stop();
+    }
 
     /// \brief
-    ///   Dispatch tasks into all workers in this \c Scheduler. This method is not concurrent safe
-    ///   and should not be called when workers are running.
+    ///   Dispatch tasks into all workers in this \c IoContext. This method is concurrent safe.
     /// \tparam Func
     ///   Type of the function that is used to generate tasks. This function should take the worker
     ///   ID as parameter and return a task.
@@ -445,17 +471,12 @@ public:
     template <typename Func>
         requires(std::is_invocable_v<Func, std::size_t>)
     auto dispatch(Func &&func) noexcept -> void {
-        // This method is not concurrent safe. Terminate if data hazard happens.
-        if (m_isRunning.load(std::memory_order_relaxed)) [[unlikely]]
-            std::terminate();
-
         for (std::size_t i = 0; i < m_workers.size(); ++i)
             m_workers[i].schedule(func(i));
     }
 
     /// \brief
-    ///   Dispatch tasks into all workers in this \c Scheduler. This method is not concurrent safe
-    ///   and should not be called when workers are running.
+    ///   Dispatch tasks into all workers in this \c IoContext. This method is concurrent safe.
     /// \tparam Func
     ///   Type of the function that is used to generate tasks. This function should take \p args as
     ///   parameters and return a task.
@@ -468,17 +489,13 @@ public:
     template <typename Func, typename... Args>
         requires(std::is_invocable_v<Func, Args &...>)
     auto dispatch(Func &&func, Args &&...args) noexcept -> void {
-        // This method is not concurrent safe. Terminate if data hazard happens.
-        if (m_isRunning.load(std::memory_order_relaxed)) [[unlikely]]
-            std::terminate();
-
-        for (auto &worker : m_workers)
-            worker.schedule(func(args...));
+        for (auto &m_worker : m_workers)
+            m_worker.schedule(func(std::forward<Args>(args)...));
     }
 
     /// \brief
-    ///   Random select a worker to schedule a task. This method is not concurrent safe and should
-    ///   not be called when workers are running. Program will terminate if workers are running.
+    ///   Schedule a task in this \c IoContext. The workers are choosen via round-robin. This method
+    ///   is concurrent safe.
     /// \tparam T
     ///   Return type of the task to be scheduled.
     /// \param task
@@ -486,38 +503,99 @@ public:
     ///   call stack.
     template <typename T>
     auto schedule(Task<T> task) noexcept -> void {
-        // This method is not concurrent safe. Terminate if data hazard happens.
-        if (m_isRunning.load(std::memory_order_relaxed)) [[unlikely]]
-            std::terminate();
-
-        auto distribution = std::uniform_int_distribution<std::size_t>(0, m_workers.size() - 1);
-        auto index        = distribution(m_random);
-
-        m_workers[index].schedule<T>(std::move(task));
+        std::size_t next = m_next.fetch_add(1, std::memory_order_relaxed) % m_workers.size();
+        m_workers[next].schedule(std::move(task));
     }
+
+    friend class ::onion::detail::IoContextWorker;
 
 private:
     /// \brief
-    ///   Running flag for this scheduler.
+    ///   Running flag for this worker.
     std::atomic_bool m_isRunning;
 
     /// \brief
-    ///   Random number generator used to random select a worker for task scheduling.
-    std::minstd_rand m_random;
+    ///   Index to the next worker to schedule a task.
+    std::atomic_size_t m_next;
 
     /// \brief
-    ///   Worker list for this scheduler.
-    std::vector<detail::SchedulerWorker> m_workers;
+    ///   Workers for this IO context.
+    std::vector<detail::IoContextWorker> m_workers;
 };
 
 } // namespace onion
 
 namespace onion {
-namespace detail {
+
+/// \class ScheduleAwaitable
+/// \brief
+///   Awaitable object for scheduling a task to be executed in current worker.
+class [[nodiscard]] ScheduleAwaitable {
+public:
+    /// \brief
+    ///   Create a new \c ScheduleAwaitable object to schedule another coroutine.
+    /// \tparam T
+    ///   Type of the result of the task.
+    /// \param task
+    ///   The task to be scheduled. The scheduled task should be the stack bottom of the coroutine
+    ///   call stack.
+    template <typename T>
+    explicit ScheduleAwaitable(Task<T> task) noexcept : m_promise{&task.detach().promise()} {}
+
+    /// \brief
+    ///   C++20 coroutine API method. Always execute \c await_suspend().
+    /// \return
+    ///   This method always returns \c false.
+    [[nodiscard]]
+    static constexpr auto await_ready() noexcept -> bool {
+        return false;
+    }
+
+    /// \brief
+    ///   Prepare for scheduling and suspending current coroutine.
+    /// \tparam T
+    ///   Type of promise of current coroutine.
+    /// \param coroutine
+    ///   Current coroutine handle.
+    /// \return
+    ///   This method always returns \c false.
+    template <typename T>
+    auto await_suspend(std::coroutine_handle<T>) noexcept -> bool {
+        auto *worker = detail::IoContextWorker::current();
+        worker->schedule(*m_promise);
+        worker->wakeUp();
+        return false;
+    }
+
+    /// \brief
+    ///   C++20 coroutine API. Resume current coroutine and get the async operation result. Do
+    ///   nothing.
+    static constexpr auto await_resume() noexcept -> void {}
+
+private:
+    /// \brief
+    ///   Pointer to the promise of the task to be scheduled.
+    detail::PromiseBase *m_promise;
+};
+
+/// \brief
+///   Schedule the specified task in current worker. This method could only be used in worker
+///   threads.
+/// \tparam T
+///   Type of the result of the task. Usually this type should be \c void.
+/// \param task
+///   The task to be scheduled. The scheduled task should be the stack bottom of the coroutine call
+///   stack.
+/// \return
+///   An awaitable object to schedule another coroutine.
+template <typename T>
+auto schedule(Task<T> task) noexcept -> ScheduleAwaitable {
+    return ScheduleAwaitable{std::move(task)};
+}
 
 /// \class YieldAwaitable
 /// \brief
-///   Awaitable object for yielding current coroutine so that the scheduler can schedule another
+///   Awaitable object for yielding current coroutine so that the worker can schedule another
 ///   coroutine immediately.
 class [[nodiscard]] YieldAwaitable {
 public:
@@ -542,9 +620,15 @@ public:
     ///   Current coroutine handle.
     template <typename T>
     auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> void {
-        m_ovlp.promise = &coroutine.promise();
-        this->await_suspend();
+        this->await_suspend(coroutine.promise());
     }
+
+    /// \brief
+    ///   For internal usage. Yield current coroutine so that the scheduler can schedule another
+    ///   coroutine immediately.
+    /// \param[in] promise
+    ///   Promise of the coroutine to be yielded.
+    ONION_API auto await_suspend(detail::PromiseBase &promise) noexcept -> void;
 
     /// \brief
     ///   C++20 coroutine API. Resume current coroutine and get the async operation result. Do
@@ -553,13 +637,17 @@ public:
 
 private:
     /// \brief
-    ///   For internal usage. Yield current coroutine so that the scheduler can schedule another
-    ///   coroutine immediately.
-    ONION_API auto await_suspend() noexcept -> void;
-
-private:
-    Overlapped m_ovlp;
+    ///   Overlapped structure for asynchronous IO operations.
+    detail::Overlapped m_ovlp;
 };
+
+/// \brief
+///   Yield current coroutine so that the scheduler can schedule another coroutine immediately.
+/// \return
+///   An awaitable object to yield current coroutine.
+constexpr auto yield() noexcept -> YieldAwaitable {
+    return {};
+}
 
 /// \class SleepAwaitable
 /// \brief
@@ -580,7 +668,6 @@ public:
     constexpr SleepAwaitable(std::chrono::duration<Rep, Period> duration) noexcept : m_timeout{} {
         auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
         auto count        = milliseconds.count();
-
         if (count > 0) [[likely]]
             m_timeout = static_cast<std::uint32_t>(count);
     }
@@ -629,30 +716,19 @@ public:
     ///   Timeout is negative or zero, this coroutine should not be suspended.
     template <typename T>
     auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-        if (m_timeout == 0)
-            return false;
-
-        auto *worker = detail::SchedulerWorker::threadWorker();
-        worker->schedule(coroutine.promise(), m_timeout);
-        return true;
-#elif defined(__linux) || defined(__linux__)
-        m_ovlp.promise = &coroutine.promise();
-        return this->await_suspend();
-#endif
+        return this->await_suspend(coroutine.promise());
     }
+
+    /// \brief
+    ///   For internal usage. Actual prepare for async timeout event.
+    /// \param[in] promise
+    ///   Promise of the coroutine to be suspended.
+    ONION_API auto await_suspend(detail::PromiseBase &promise) noexcept -> bool;
 
     /// \brief
     ///   C++20 coroutine API. Resume current coroutine and get result of this sleep operation. Do
     ///   nothing.
     static constexpr auto await_resume() noexcept -> void {}
-
-private:
-#if defined(__linux) || defined(__linux__)
-    /// \brief
-    ///   For internal usage. Actual prepare for async timeout event.
-    ONION_API auto await_suspend() noexcept -> bool;
-#endif
 
 private:
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
@@ -662,39 +738,16 @@ private:
 #elif defined(__linux) || defined(__linux__)
     /// \brief
     ///   Overlapped structure for \c io_uring operations.
-    Overlapped m_ovlp;
+    detail::Overlapped m_ovlp;
 
     /// \brief
     ///   Timeout struct used for \c io_uring.
     struct {
-        long long tv_sec;
-        long long tv_nsec;
+        std::int64_t tv_sec;
+        std::int64_t tv_nsec;
     } m_timeout;
 #endif
 };
-
-} // namespace detail
-
-/// \brief
-///   Schedule a new task into current thread worker. This method could only be called in worker
-///   threads.
-/// \tparam T
-///   Return type of the scheduled task. Usually this should be \c void.
-/// \param task
-///   The task to be scheduled. This task should be the coroutine stack bottom task.
-template <typename T>
-auto schedule(Task<T> task) noexcept -> void {
-    auto *worker = detail::SchedulerWorker::threadWorker();
-    worker->schedule(std::move(task));
-}
-
-/// \brief
-///   Yield current coroutine so that the scheduler can schedule another coroutine immediately.
-/// \return
-///   An awaitable object to yield current coroutine.
-constexpr auto yield() noexcept -> detail::YieldAwaitable {
-    return {};
-}
 
 /// \brief
 ///   Suspend current coroutine for a while.
@@ -708,8 +761,7 @@ constexpr auto yield() noexcept -> detail::YieldAwaitable {
 /// \return
 ///   An awaitable object to suspend current coroutine for a while.
 template <typename Rep, typename Period>
-constexpr auto sleep(std::chrono::duration<Rep, Period> duration) noexcept
-    -> detail::SleepAwaitable {
+constexpr auto sleep(std::chrono::duration<Rep, Period> duration) noexcept -> SleepAwaitable {
     return {duration};
 }
 

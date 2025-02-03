@@ -1,4 +1,4 @@
-#include "onion/scheduler.hpp"
+#include "onion/io_context.hpp"
 
 #include <doctest/doctest.h>
 
@@ -7,8 +7,9 @@
 
 using namespace onion;
 
-TEST_CASE("[Scheduler] Dispatch with worker ID") {
-    Scheduler scheduler;
+TEST_CASE("[IoContext] Dispatch with worker ID") {
+    IoContext ctx;
+
     std::mutex mutex;
     std::set<std::size_t> idSet;
 
@@ -16,15 +17,15 @@ TEST_CASE("[Scheduler] Dispatch with worker ID") {
         std::lock_guard<std::mutex> lock{mutex};
         CHECK(idSet.find(id) == idSet.end());
         CHECK(idSet.insert(id).second);
-        if (idSet.size() == scheduler.size())
-            scheduler.stop();
+        if (idSet.size() == ctx.size())
+            ctx.stop();
         co_return;
     };
 
-    scheduler.dispatch(taskWithWorkerId);
-    scheduler.start();
+    ctx.dispatch(taskWithWorkerId);
+    ctx.start();
 
-    CHECK(idSet.size() == scheduler.size());
-    for (std::size_t i = 0; i < scheduler.size(); ++i)
+    CHECK(idSet.size() == ctx.size());
+    for (std::size_t i = 0; i < ctx.size(); ++i)
         CHECK(idSet.find(i) != idSet.end());
 }

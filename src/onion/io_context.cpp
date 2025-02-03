@@ -1,9 +1,4 @@
-#include "onion/scheduler.hpp"
-
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <thread>
+#include "onion/io_context.hpp"
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
 #    ifndef WIN32_LEAN_AND_MEAN
@@ -18,34 +13,133 @@
 #    include <liburing.h>
 #    include <sys/eventfd.h>
 #    include <sys/utsname.h>
-#    include <unistd.h>
 #endif
+
+#include <array>
+#include <cstdlib>
+#include <system_error>
+#include <thread>
 
 using namespace onion;
 using namespace onion::detail;
 
-/// \brief
-///   For internal usage. Pause the current thread for a short while in spin-waiting.
-static auto spinPause() noexcept -> void {
 #if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
 #    if defined(__clang__) || defined(__GNUC__)
-    __builtin_ia32_pause();
+#        define spinPause() __builtin_ia32_pause()
 #    elif defined(_MSC_VER)
-    _mm_pause();
+#        define spinPause() _mm_pause()
 #    else
-    __asm__ volatile("pause" ::: "memory");
+#        define spinPause() __asm__ volatile("pause" ::: "memory")
 #    endif
 #elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
-    __asm__ volatile("yield" ::: "memory");
+#    define spinPause() __asm__ volatile("yield" ::: "memory")
 #else
-    std::this_thread::yield();
+#    define spinPause() std::this_thread::yield()
 #endif
+
+#if defined(__linux) || defined(__linux__)
+/// \brief
+///   Create an unsigned int that represents a version number.
+/// \param major
+///   Major linux kernel version number.
+/// \param minor
+///   Minor linux kernel version number.
+/// \param patch
+///   Patch linux kernel version number.
+[[nodiscard]]
+static auto makeVersion(std::uint8_t major, std::uint8_t minor, std::uint8_t patch) noexcept
+    -> std::uint32_t {
+    return (static_cast<std::uint32_t>(major) << 16) | (static_cast<std::uint32_t>(minor) << 8) |
+           patch;
 }
 
-/// \class SchedulerTaskQueue::TaskBlock
+/// \brief
+///   Get current linux kernel version. This is used to check if certain \c io_uring features are
+///   supported.
+/// \return
+///   An unsigned integer that represents current linux kernel version. This is created via function
+///   \c makeVersion.
+[[nodiscard]]
+static auto kernelVersion() noexcept -> std::uint32_t {
+    std::uint8_t versions[3]{};
+
+    struct utsname name;
+    if (::uname(&name) != 0)
+        return 0;
+
+    std::string_view s = name.release;
+    std::uint8_t *v    = versions;
+
+    for (char c : s) {
+        if (c >= '0' && c <= '9')
+            *v = *v * 10 + static_cast<std::uint8_t>(c) - '0';
+        else if (c == '.')
+            ++v;
+        else
+            break;
+
+        if (v >= versions + std::size(versions)) [[unlikely]]
+            break;
+    }
+
+    return makeVersion(versions[0], versions[1], versions[2]);
+}
+
+/// \brief
+///   Get available \c io_uring setup flags according to current kernel version.
+/// \return
+///   Available \c io_uring setup flags.
+[[nodiscard]]
+static auto ioUringSetupFlags() noexcept -> std::uint32_t {
+    std::uint32_t flags   = IORING_SETUP_CLAMP;
+    std::uint32_t version = kernelVersion();
+
+    if (version >= makeVersion(5, 18, 0))
+        flags |= IORING_SETUP_SUBMIT_ALL;
+
+    if (version >= makeVersion(5, 19, 0)) {
+        flags |= IORING_SETUP_COOP_TASKRUN;
+        flags |= IORING_SETUP_TASKRUN_FLAG;
+    }
+
+    return flags;
+}
+
+/// \brief
+///   Get available \c io_uring feature flags according to current kernel version.
+/// \return
+///   Available \c io_uring feature flags.
+[[nodiscard]]
+static auto ioUringSetupFeatures() noexcept -> std::uint32_t {
+    std::uint32_t features = 0;
+    std::uint32_t version  = kernelVersion();
+
+    if (version >= makeVersion(5, 4, 0))
+        features |= IORING_FEAT_SINGLE_MMAP;
+
+    if (version >= makeVersion(5, 5, 0))
+        features |= IORING_FEAT_NODROP;
+
+    if (version >= makeVersion(5, 6, 0))
+        features |= IORING_FEAT_RW_CUR_POS;
+
+    if (version >= makeVersion(5, 7, 0))
+        features |= IORING_FEAT_FAST_POLL;
+
+    return features;
+}
+#endif
+
+namespace {
+
+/// \brief
+///   Maximum number of tasks in a \c TaskBlock.
+inline constexpr std::size_t TaskBlockCapacity = 64;
+
+/// \class TaskBlock
 /// \brief
 ///   Block of tasks in the work-stealing queue.
-class SchedulerTaskQueue::TaskBlock {
+class TaskBlock {
 public:
     /// \enum Status
     /// \brief
@@ -66,76 +160,24 @@ public:
     }
 
     /// \brief
-    ///   Copy constructor of \c TaskBlock. Copying \c TaskBlock is not concurrent safe.
-    /// \param other
-    ///   The \c TaskBlock to copy from.
-    TaskBlock(const TaskBlock &other) noexcept
-        : m_head{other.m_head.load(std::memory_order_relaxed)},
-          m_tail{other.m_tail.load(std::memory_order_relaxed)},
-          m_stealHead{other.m_stealHead.load(std::memory_order_relaxed)},
-          m_stealTail{other.m_stealTail.load(std::memory_order_relaxed)} {
-        std::ranges::copy(other.m_tasks, m_tasks.begin());
-    }
+    ///   \c TaskBlock is not copyable.
+    TaskBlock(const TaskBlock &other) = delete;
 
     /// \brief
-    ///   Move constructor of \c TaskBlock. Moving \c TaskBlock is not concurrent safe.
-    ///
-    ///   This move constructor is actually the same as the copy constructor.
-    /// \param[inout] other
-    ///   The \c TaskBlock to move from.
-    TaskBlock(TaskBlock &&other) noexcept : TaskBlock{other} {}
+    ///   \c TaskBlock is not movable.
+    TaskBlock(TaskBlock &&other) = delete;
 
     /// \brief
     ///   Destroy this task block. \c TaskBlock is trivially destructible.
     ~TaskBlock() noexcept = default;
 
     /// \brief
-    ///   Copy assignment operator of \c TaskBlock. Copying \c TaskBlock is not concurrent safe.
-    ///
-    ///   Self-assignment is allowed but not recommended.
-    /// \param other
-    ///   The \c TaskBlock to copy from.
-    /// \return
-    ///   Reference to this \c TaskBlock.
-    auto operator=(const TaskBlock &other) noexcept -> TaskBlock & {
-        if (this == &other) [[unlikely]]
-            return *this;
-
-        std::size_t head      = other.m_head.load(std::memory_order_relaxed);
-        std::size_t tail      = other.m_tail.load(std::memory_order_relaxed);
-        std::size_t stealHead = other.m_stealHead.load(std::memory_order_relaxed);
-        std::size_t stealTail = other.m_stealTail.load(std::memory_order_relaxed);
-
-        m_head.store(head, std::memory_order_relaxed);
-        m_tail.store(tail, std::memory_order_relaxed);
-        m_stealHead.store(stealHead, std::memory_order_relaxed);
-        m_stealTail.store(stealTail, std::memory_order_relaxed);
-
-        std::ranges::copy(other.m_tasks, m_tasks.begin());
-
-        return *this;
-    }
+    ///   \c TaskBlock is not copyable.
+    auto operator=(const TaskBlock &other) = delete;
 
     /// \brief
-    ///   Move assignment operator of \c TaskBlock. Moving \c TaskBlock is not concurrent safe.
-    ///
-    ///   This move assignment operator is actually the same as the copy assignment operator.
-    /// \param[inout] other
-    ///   The \c TaskBlock to move from.
-    /// \return
-    ///   Reference to this \c TaskBlock.
-    auto operator=(TaskBlock &&other) noexcept -> TaskBlock & {
-        return this->operator=(other);
-    }
-
-    /// \brief
-    ///   Get the size of this task block.
-    /// \return
-    ///   The size of this task block.
-    [[nodiscard]]
-    static constexpr auto size() noexcept -> std::size_t {
-        return 64;
-    }
+    ///   \c TaskBlock is not movable.
+    auto operator=(TaskBlock &&other) = delete;
 
     /// \brief
     ///   Checks if this block is available for pushing tasks by owner thread.
@@ -173,28 +215,6 @@ public:
         m_tail.store(back + 1, std::memory_order_release);
 
         return Status::Success;
-    }
-
-    /// \brief
-    ///   Try to push a sequence of tasks into this block.
-    /// \tparam Iterator
-    ///   Type of the first iterator to acquire tasks from.
-    /// \tparam Sentinel
-    ///   Type of the sentinel iterator to stop acquiring tasks.
-    /// \param first
-    ///   The first iterator to acquire tasks from.
-    /// \param last
-    ///   The sentinel iterator to stop acquiring tasks.
-    /// \return
-    ///   Iterator to the first element that is not pushed into this block.
-    template <typename Iterator, typename Sentinel>
-    auto tryPush(Iterator first, Sentinel last) noexcept -> Iterator {
-        std::size_t back = m_tail.load(std::memory_order_relaxed);
-        for (; first != last && back < m_tasks.size(); ++first, ++back)
-            m_tasks[back] = *first;
-
-        m_tail.store(back, std::memory_order_release);
-        return first;
     }
 
     /// \brief
@@ -315,73 +335,52 @@ private:
     std::atomic_size_t m_tail;
     std::atomic_size_t m_stealHead;
     std::atomic_size_t m_stealTail;
-    std::array<PromiseBase *, 64> m_tasks;
+    std::array<PromiseBase *, TaskBlockCapacity> m_tasks;
 };
 
-SchedulerTaskQueue::SchedulerTaskQueue(std::size_t capacity) noexcept
+} // namespace
+
+IoContextWorkerTaskQueue::IoContextWorkerTaskQueue(std::size_t capacity) noexcept
     : m_mask{},
       m_ownerIndex{1},
       m_thiefIndex{0},
-      m_blocks{} {
+      m_blocks{nullptr} {
     // Round up with block size.
-    capacity = (capacity + TaskBlock::size() - 1) & ~(TaskBlock::size() - 1);
-    capacity = std::max(capacity / TaskBlock::size(), std::size_t{2});
+    capacity = (capacity + TaskBlockCapacity - 1) & ~(TaskBlockCapacity - 1);
+    capacity = std::max(capacity / TaskBlockCapacity, std::size_t{2});
 
-    m_blocks.resize(capacity);
-    m_mask = capacity - 1;
+    m_mask       = capacity - 1;
+    auto *blocks = new (std::nothrow) TaskBlock[capacity];
 
-    m_blocks[m_ownerIndex.load(std::memory_order_relaxed)].reclaim();
+    // We assume that the memory allocation will never fail. Explicit terminate to avoid undefined
+    // behavior.
+    if (blocks == nullptr) [[unlikely]]
+        std::terminate();
+
+    blocks[m_ownerIndex.load(std::memory_order_relaxed)].reclaim();
+    m_blocks = blocks;
 }
 
-SchedulerTaskQueue::SchedulerTaskQueue(const SchedulerTaskQueue &other) noexcept
-    : m_mask{other.m_mask},
-      m_ownerIndex{other.m_ownerIndex.load(std::memory_order_relaxed)},
-      m_thiefIndex{other.m_thiefIndex.load(std::memory_order_relaxed)},
-      m_blocks{other.m_blocks} {}
-
-SchedulerTaskQueue::SchedulerTaskQueue(SchedulerTaskQueue &&other) noexcept
-    : m_mask{other.m_mask},
-      m_ownerIndex{other.m_ownerIndex.load(std::memory_order_relaxed)},
-      m_thiefIndex{other.m_thiefIndex.load(std::memory_order_relaxed)},
-      m_blocks{std::move(other.m_blocks)} {}
-
-SchedulerTaskQueue::~SchedulerTaskQueue() noexcept = default;
-
-auto SchedulerTaskQueue::operator=(const SchedulerTaskQueue &other) noexcept
-    -> SchedulerTaskQueue & {
-    if (this == &other) [[unlikely]]
-        return *this;
-
-    std::size_t ownerIndex = other.m_ownerIndex.load(std::memory_order_relaxed);
-    std::size_t thiefIndex = other.m_thiefIndex.load(std::memory_order_relaxed);
-
-    m_mask = other.m_mask;
-    m_ownerIndex.store(ownerIndex, std::memory_order_relaxed);
-    m_thiefIndex.store(thiefIndex, std::memory_order_relaxed);
-    m_blocks = other.m_blocks;
-
-    return *this;
+IoContextWorkerTaskQueue::~IoContextWorkerTaskQueue() noexcept {
+    if (m_blocks != nullptr) {
+        auto *blocks = static_cast<TaskBlock *>(m_blocks);
+        delete[] blocks;
+    }
 }
 
-auto SchedulerTaskQueue::operator=(SchedulerTaskQueue &&other) noexcept -> SchedulerTaskQueue & {
-    if (this == &other) [[unlikely]]
-        return *this;
-
-    std::size_t ownerIndex = other.m_ownerIndex.load(std::memory_order_relaxed);
-    std::size_t thiefIndex = other.m_thiefIndex.load(std::memory_order_relaxed);
-
-    m_mask = other.m_mask;
-    m_ownerIndex.store(ownerIndex, std::memory_order_relaxed);
-    m_thiefIndex.store(thiefIndex, std::memory_order_relaxed);
-    m_blocks = std::move(other.m_blocks);
-
-    return *this;
+auto IoContextWorkerTaskQueue::approximateSize() const noexcept -> std::size_t {
+    // Get approximate number of tasks in this queue by number of blocks in use.
+    std::size_t owner = m_ownerIndex.load(std::memory_order_relaxed);
+    std::size_t thief = m_thiefIndex.load(std::memory_order_relaxed);
+    std::size_t diff  = owner - thief;
+    return diff * TaskBlockCapacity;
 }
 
-auto SchedulerTaskQueue::tryPush(PromiseBase *value) noexcept -> bool {
+auto IoContextWorkerTaskQueue::tryPush(PromiseBase *value) noexcept -> bool {
+    auto *blocks = static_cast<TaskBlock *>(m_blocks);
     do {
         std::size_t index = m_ownerIndex.load(std::memory_order_relaxed);
-        TaskBlock &block  = m_blocks[index & m_mask];
+        TaskBlock &block  = blocks[index & m_mask];
 
         if (block.tryPush(value) == TaskBlock::Status::Success)
             return true;
@@ -389,10 +388,11 @@ auto SchedulerTaskQueue::tryPush(PromiseBase *value) noexcept -> bool {
     return false;
 }
 
-auto SchedulerTaskQueue::tryPop() noexcept -> PromiseBase * {
+auto IoContextWorkerTaskQueue::tryPop() noexcept -> PromiseBase * {
+    auto *blocks = static_cast<TaskBlock *>(m_blocks);
     do {
         std::size_t index = m_ownerIndex.load(std::memory_order_relaxed);
-        TaskBlock &block  = m_blocks[index & m_mask];
+        TaskBlock &block  = blocks[index & m_mask];
 
         auto [status, value] = block.tryPop();
         if (status == TaskBlock::Status::Success)
@@ -404,12 +404,13 @@ auto SchedulerTaskQueue::tryPop() noexcept -> PromiseBase * {
     return nullptr;
 }
 
-auto SchedulerTaskQueue::trySteal() noexcept -> PromiseBase * {
+auto IoContextWorkerTaskQueue::trySteal() noexcept -> PromiseBase * {
+    auto *blocks      = static_cast<TaskBlock *>(m_blocks);
     std::size_t thief = 0;
     do {
         thief = m_thiefIndex.load(std::memory_order_relaxed);
 
-        TaskBlock &block = m_blocks[thief & m_mask];
+        TaskBlock &block = blocks[thief & m_mask];
         auto result      = block.trySteal();
         while (result.first != TaskBlock::Status::Done) {
             if (result.first == TaskBlock::Status::Success)
@@ -425,22 +426,24 @@ auto SchedulerTaskQueue::trySteal() noexcept -> PromiseBase * {
     return nullptr;
 }
 
-auto SchedulerTaskQueue::advancePushIndex() noexcept -> bool {
+auto IoContextWorkerTaskQueue::advancePushIndex() noexcept -> bool {
+    auto *blocks = static_cast<TaskBlock *>(m_blocks);
+
     std::size_t owner = m_ownerIndex.load(std::memory_order_relaxed);
     std::size_t next  = owner + 1;
     std::size_t thief = m_thiefIndex.load(std::memory_order_relaxed);
 
     // Wrap around occured.
-    if (next - thief >= m_blocks.size())
+    if (next - thief > m_mask)
         return false;
 
     // Try to acquire next block for writing.
-    TaskBlock &nextBlock = m_blocks[next & m_mask];
+    TaskBlock &nextBlock = blocks[next & m_mask];
     if (!nextBlock.isWritable())
         return false;
 
     // Release current block.
-    TaskBlock &currentBlock = m_blocks[owner & m_mask];
+    TaskBlock &currentBlock = blocks[owner & m_mask];
     currentBlock.grant();
     m_ownerIndex.store(next, std::memory_order_relaxed);
 
@@ -450,18 +453,20 @@ auto SchedulerTaskQueue::advancePushIndex() noexcept -> bool {
     return true;
 }
 
-auto SchedulerTaskQueue::advancePopIndex() noexcept -> bool {
+auto IoContextWorkerTaskQueue::advancePopIndex() noexcept -> bool {
+    auto *blocks = static_cast<TaskBlock *>(m_blocks);
+
     std::size_t owner = m_ownerIndex.load(std::memory_order_relaxed);
     std::size_t prev  = owner - 1;
 
-    TaskBlock &prevBlock = m_blocks[prev & m_mask];
+    TaskBlock &prevBlock = blocks[prev & m_mask];
     auto result          = prevBlock.takeOver();
 
     if (result.first != result.second) {
         std::size_t thief = m_thiefIndex.load(std::memory_order_relaxed);
         if (thief == prev) {
-            prev += m_blocks.size();
-            thief += m_blocks.size() - 1;
+            prev += m_mask + 1;
+            thief += m_mask;
             m_thiefIndex.store(thief, std::memory_order_relaxed);
         }
 
@@ -472,9 +477,11 @@ auto SchedulerTaskQueue::advancePopIndex() noexcept -> bool {
     return false;
 }
 
-auto SchedulerTaskQueue::advanceStealIndex(std::size_t current) noexcept -> bool {
+auto IoContextWorkerTaskQueue::advanceStealIndex(std::size_t current) noexcept -> bool {
+    auto *blocks = static_cast<TaskBlock *>(m_blocks);
+
     std::size_t next     = current + 1;
-    TaskBlock &nextBlock = m_blocks[next & m_mask];
+    TaskBlock &nextBlock = blocks[next & m_mask];
 
     if (nextBlock.isStealable()) {
         m_thiefIndex.compare_exchange_strong(current, next, std::memory_order_relaxed);
@@ -484,153 +491,41 @@ auto SchedulerTaskQueue::advanceStealIndex(std::size_t current) noexcept -> bool
     return m_thiefIndex.load(std::memory_order_relaxed) != current;
 }
 
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+/// \brief
+///   Wake up key for IOCP.
+inline constexpr ULONG_PTR WakeUpKey = 0;
+
+/// \brief
+///   Stop key for IOCP.
+inline constexpr ULONG_PTR StopKey = std::numeric_limits<ULONG_PTR>::max();
+#elif defined(__linux) || defined(__linux__)
+/// \brief
+///   Wake up key for \c eventfd in \c io_uring.
+inline constexpr eventfd_t WakeUpKey = 1;
+
+/// \brief
+///   Stop key for \c eventfd in \c io_uring.
+inline constexpr eventfd_t StopKey = 0x8000000000000000ULL;
+#endif
+
 /// \brief
 ///   Worker for each thread.
-static thread_local SchedulerWorker *ThreadWorker;
-
-#if defined(__linux) || defined(__linux__)
-/// \brief
-///   Create an unsigned int that represents a version number.
-/// \param major
-///   Major linux kernel version number.
-/// \param minor
-///   Minor linux kernel version number.
-/// \param patch
-///   Patch linux kernel version number.
-[[nodiscard]]
-static auto makeVersion(std::uint8_t major, std::uint8_t minor, std::uint8_t patch) noexcept
-    -> std::uint32_t {
-    return (static_cast<std::uint32_t>(major) << 16) | (static_cast<std::uint32_t>(minor) << 8) |
-           patch;
-}
-
-/// \brief
-///   Get current linux kernel version. This is used to check if certain \c io_uring features are
-///   supported.
-/// \return
-///   An unsigned integer that represents current linux kernel version. This is created via function
-///   \c makeVersion.
-[[nodiscard]]
-static auto kernelVersion() noexcept -> std::uint32_t {
-    std::uint8_t versions[3]{};
-
-    struct utsname name;
-    if (::uname(&name) != 0)
-        return 0;
-
-    std::string_view s = name.release;
-    std::uint8_t *v    = versions;
-
-    for (char c : s) {
-        if (c >= '0' && c <= '9')
-            *v = *v * 10 + static_cast<std::uint8_t>(c) - '0';
-        else if (c == '.')
-            ++v;
-        else
-            break;
-
-        if (v >= versions + std::size(versions)) [[unlikely]]
-            break;
-    }
-
-    return makeVersion(versions[0], versions[1], versions[2]);
-}
-
-/// \brief
-///   Get available \c io_uring setup flags according to current kernel version.
-/// \return
-///   Available \c io_uring setup flags.
-[[nodiscard]]
-static auto ioUringSetupFlags() noexcept -> std::uint32_t {
-    std::uint32_t flags   = IORING_SETUP_CLAMP;
-    std::uint32_t version = kernelVersion();
-
-    if (version >= makeVersion(5, 18, 0))
-        flags |= IORING_SETUP_SUBMIT_ALL;
-
-    if (version >= makeVersion(5, 19, 0)) {
-        flags |= IORING_SETUP_COOP_TASKRUN;
-        flags |= IORING_SETUP_TASKRUN_FLAG;
-    }
-
-    return flags;
-}
-
-/// \brief
-///   Get available \c io_uring feature flags according to current kernel version.
-/// \return
-///   Available \c io_uring feature flags.
-[[nodiscard]]
-static auto ioUringSetupFeatures() noexcept -> std::uint32_t {
-    std::uint32_t features = 0;
-    std::uint32_t version  = kernelVersion();
-
-    if (version >= makeVersion(5, 4, 0))
-        features |= IORING_FEAT_SINGLE_MMAP;
-
-    if (version >= makeVersion(5, 5, 0))
-        features |= IORING_FEAT_NODROP;
-
-    if (version >= makeVersion(5, 6, 0))
-        features |= IORING_FEAT_RW_CUR_POS;
-
-    if (version >= makeVersion(5, 7, 0))
-        features |= IORING_FEAT_FAST_POLL;
-
-    return features;
-}
-#endif
-
-/// \brief
-///   Try to bind current thread to the specified CPU core. This method does nothing if failed to
-///   bind current thread to CPU thread.
-/// \param id
-///   ID of the CPU core to be bound. This will be wrapped around if \p id is greater than number of
-///   processor cores.
-static auto bindThreadToCpuCore(std::size_t id) noexcept -> void {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    // Query number of CPU cores.
-    SYSTEM_INFO info;
-    GetSystemInfo(&info);
-    if (info.dwNumberOfProcessors == 0) [[unlikely]]
-        return;
-
-    constexpr std::size_t maskSize = sizeof(DWORD_PTR) * 8;
-    if (info.dwNumberOfProcessors > maskSize)
-        info.dwNumberOfProcessors = maskSize;
-
-    id %= info.dwNumberOfProcessors;
-    SetThreadAffinityMask(GetCurrentThread(), static_cast<DWORD>(1 << id));
-#elif defined(__linux) || defined(__linux__)
-    long n = sysconf(_SC_NPROCESSORS_ONLN);
-    if (n <= 0) [[unlikely]]
-        return;
-
-    cpu_set_t mask;
-    CPU_ZERO(&mask);
-    if (n > CPU_SETSIZE)
-        n = CPU_SETSIZE;
-
-    id %= static_cast<std::size_t>(n);
-    CPU_SET(id, &mask);
-
-    sched_setaffinity(gettid(), sizeof(mask), &mask);
-#endif
-}
+static thread_local IoContextWorker *threadWorker;
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
-    : m_isRunning{},
-      m_scheduler{&scheduler},
-      m_index{index},
-      m_random{std::random_device{}()},
+IoContextWorker::IoContextWorker(IoContext &context)
+    : m_isRunning{false},
+      m_context{&context},
       m_iocp{CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1)},
       m_frequency{},
       m_timeouts{},
       m_taskQueue{16384},
+      m_localTasksMutex{},
       m_localTasks{} {
     if (m_iocp == nullptr) [[unlikely]]
-        throw std::system_error(GetLastError(), std::system_category(), "Failed to create IOCP");
+        throw std::system_error{static_cast<int>(GetLastError()), std::system_category(),
+                                "Failed to create IOCP"};
 
     // Get frequency of the performance counter per millisecond.
     LARGE_INTEGER freq;
@@ -638,18 +533,17 @@ SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
     m_frequency = freq.QuadPart / 1000;
 }
 #elif defined(__linux) || defined(__linux__)
-SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
-    : m_isRunning{},
-      m_scheduler{&scheduler},
-      m_index{index},
-      m_random{std::random_device{}()},
-      m_uring{},
+IoContextWorker::IoContextWorker(IoContext &context)
+    : m_isRunning{false},
+      m_context{&context},
+      m_uring{std::malloc(sizeof(io_uring))},
       m_wakeUp{-1},
       m_taskQueue{16384},
-      m_localTasks{} {
-    // Create io_uring.
-    // We assume that we would never fail on allocating memory.
-    m_uring = std::malloc(sizeof(io_uring));
+      m_localTasksMutex{},
+      m_localTasks{},
+      m_hasLocalTask{false} {
+    // We assumes that the memory allocation will never fail. Explicit terminate to avoid undefined
+    // behavior.
     if (m_uring == nullptr) [[unlikely]]
         std::terminate();
 
@@ -670,7 +564,7 @@ SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
     int result = io_uring_queue_init_params(32768, ring, &params);
     if (result != 0) [[unlikely]] {
         std::free(ring);
-        throw std::system_error(-result, std::system_category(), "Failed to create io_uring");
+        throw std::system_error{-result, std::system_category(), "Failed to create io_uring"};
     }
 
     // Create event file descriptor.
@@ -679,40 +573,39 @@ SchedulerWorker::SchedulerWorker(Scheduler &scheduler, std::size_t index)
         int error = errno;
         io_uring_queue_exit(ring);
         std::free(ring);
-        throw std::system_error(error, std::system_category(), "Failed to create eventfd");
+        throw std::system_error{error, std::system_category(), "Failed to create eventfd"};
     }
 }
 #endif
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
+IoContextWorker::IoContextWorker(IoContextWorker &&other) noexcept
     : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
-      m_scheduler{other.m_scheduler},
-      m_index{other.m_index},
-      m_random{std::move(other.m_random)},
+      m_context{other.m_context},
       m_iocp{other.m_iocp},
       m_frequency{other.m_frequency},
       m_timeouts{std::move(other.m_timeouts)},
       m_taskQueue{std::move(other.m_taskQueue)},
-      m_localTasks{std::move(other.m_localTasks)} {
+      m_localTasksMutex{},
+      m_localTasks{} {
     other.m_iocp = nullptr;
 }
 #elif defined(__linux) || defined(__linux__)
-SchedulerWorker::SchedulerWorker(SchedulerWorker &&other) noexcept
+IoContextWorker::IoContextWorker(IoContextWorker &&other) noexcept
     : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
-      m_scheduler{other.m_scheduler},
-      m_index{other.m_index},
-      m_random{std::move(other.m_random)},
+      m_context{other.m_context},
       m_uring{other.m_uring},
       m_wakeUp{other.m_wakeUp},
       m_taskQueue{std::move(other.m_taskQueue)},
-      m_localTasks{std::move(other.m_localTasks)} {
+      m_localTasksMutex{},
+      m_localTasks{std::move(other.m_localTasks)},
+      m_hasLocalTask{other.m_hasLocalTask.load(std::memory_order_relaxed)} {
     other.m_uring  = nullptr;
     other.m_wakeUp = -1;
 }
 #endif
 
-SchedulerWorker::~SchedulerWorker() noexcept {
+IoContextWorker::~IoContextWorker() noexcept {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     if (m_iocp != nullptr)
         CloseHandle(m_iocp);
@@ -721,20 +614,26 @@ SchedulerWorker::~SchedulerWorker() noexcept {
         auto *ring = static_cast<io_uring *>(m_uring);
         io_uring_queue_exit(ring);
         std::free(ring);
-    }
 
-    if (m_wakeUp >= 0)
-        close(m_wakeUp);
+        ::close(m_wakeUp);
+    }
 #endif
 }
 
-auto SchedulerWorker::start() noexcept -> void {
+auto IoContextWorker::start() noexcept -> void {
     // This method could only be called once at the same time.
     if (m_isRunning.exchange(true, std::memory_order_relaxed)) [[unlikely]]
-        std::terminate();
+        return;
 
     // Set thread worker.
-    ThreadWorker = this;
+    threadWorker = this;
+
+    // Stop flag.
+    bool shouldStop = false;
+
+    // Local tasks.
+    std::vector<PromiseBase *> localTasks;
+    localTasks.reserve(64);
 
     // Execute a task.
     const auto runTask = [](PromiseBase *promise) noexcept -> void {
@@ -746,29 +645,42 @@ auto SchedulerWorker::start() noexcept -> void {
 
     // Steal works from another worker and execute.
     const auto stealTasks = [this, runTask]() noexcept -> void {
-        auto workers = m_scheduler->workers();
+        auto &workers = m_context->m_workers;
 
         // Do not steal tasks if there is only one worker.
         if (workers.size() == 1)
             return;
 
-        auto distribution = std::uniform_int_distribution<std::size_t>(0, workers.size() - 2);
-        auto index        = distribution(m_random);
+        // Steal from the worker that has the most tasks.
+        IoContextWorker *worker = nullptr;
+        std::size_t maxCount    = 0;
 
-        // Avoid stealing from itself.
-        if (index >= m_index)
-            index += 1;
+        for (auto &w : workers) {
+            if (&w == this)
+                continue;
 
-        SchedulerWorker &worker = workers[index];
-        PromiseBase *promise    = worker.m_taskQueue.trySteal();
-        while (promise != nullptr) {
+            std::size_t count = w.m_taskQueue.approximateSize();
+            if (count > maxCount) {
+                worker   = &w;
+                maxCount = count;
+            }
+        }
+
+        if (worker == nullptr)
+            return;
+
+        // Steal at most 32 works at a time.
+        std::size_t count    = 0;
+        PromiseBase *promise = worker->m_taskQueue.trySteal();
+        while (count < 32 && promise != nullptr) {
             runTask(promise);
-            promise = worker.m_taskQueue.trySteal();
+            ++count;
+            promise = worker->m_taskQueue.trySteal();
         }
     };
 
     // Try to handle local tasks.
-    const auto handleTasks = [this, runTask, stealTasks]() noexcept -> void {
+    const auto handleTasks = [this, runTask, stealTasks, &localTasks]() noexcept -> void {
         bool shouldSteal = true;
 
         PromiseBase *promise = m_taskQueue.tryPop();
@@ -780,20 +692,24 @@ auto SchedulerWorker::start() noexcept -> void {
             promise = m_taskQueue.tryPop();
         }
 
-        if (!m_localTasks.empty()) {
+        if (m_hasLocalTask.load(std::memory_order_relaxed)) {
             shouldSteal = false;
-            // Avoid iterator invalidation.
-            for (std::size_t i = 0; i < m_localTasks.size(); ++i) // NOLINT
-                runTask(m_localTasks[i]);
 
-            m_localTasks.clear();
+            { // Take over local tasks.
+                std::lock_guard<std::mutex> lock{m_localTasksMutex};
+                localTasks.swap(m_localTasks);
+                m_hasLocalTask.store(false, std::memory_order_relaxed);
+            }
+
+            for (PromiseBase *task : localTasks)
+                runTask(task);
+
+            localTasks.clear();
         }
 
         if (shouldSteal)
             stealTasks();
     };
-
-    bool shouldStop = false;
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     DWORD bytes;
@@ -838,8 +754,8 @@ auto SchedulerWorker::start() noexcept -> void {
                 o->error = error;
                 o->bytes = bytes;
 
-                this->schedule(*o->promise);
-            } else {
+                schedule(*o->promise);
+            } else if (key == StopKey) [[unlikely]] {
                 shouldStop = true;
             }
 
@@ -849,7 +765,7 @@ auto SchedulerWorker::start() noexcept -> void {
         // Handle timeout events.
         QueryPerformanceCounter(&now);
         while (!m_timeouts.empty() && m_timeouts.top().expire <= now.QuadPart) {
-            this->schedule(*m_timeouts.top().promise);
+            schedule(*m_timeouts.top().promise);
             m_timeouts.pop();
         }
 
@@ -858,9 +774,9 @@ auto SchedulerWorker::start() noexcept -> void {
 #elif defined(__linux) || defined(__linux__)
     auto *const ring  = static_cast<io_uring *>(m_uring);
     io_uring_cqe *cqe = nullptr;
-    __kernel_timespec timeout{};
 
-    std::uint64_t wakeUpBuffer = 0;
+    __kernel_timespec timeout{};
+    eventfd_t wakeUpBuffer = 0;
 
     // Prepare for wake up event. Older versions of linux kernel does not support multishot read. We
     // would manually simulate it.
@@ -883,8 +799,8 @@ auto SchedulerWorker::start() noexcept -> void {
     };
 
     // Handle tasks once before entering the event loop.
-    handleTasks();
     prepareWakeup();
+    handleTasks();
     while (!shouldStop) [[likely]] {
         // Wait for at most 1 second.
         timeout.tv_sec  = 1;
@@ -898,8 +814,10 @@ auto SchedulerWorker::start() noexcept -> void {
                 ovlp->result = cqe->res;
                 this->schedule(*ovlp->promise);
             } else {
-                // Stop notification.
-                shouldStop = true;
+                if (wakeUpBuffer >= StopKey) [[unlikely]]
+                    shouldStop = true;
+                else
+                    prepareWakeup();
             }
 
             io_uring_cq_advance(ring, 1);
@@ -912,28 +830,38 @@ auto SchedulerWorker::start() noexcept -> void {
 #endif
 
     // Unset thread worker.
-    ThreadWorker = nullptr;
+    threadWorker = nullptr;
 
     // Clear running flag so that this worker could be reused.
     m_isRunning.store(false, std::memory_order_relaxed);
 }
 
-auto SchedulerWorker::stop() noexcept -> void {
+auto IoContextWorker::stop() noexcept -> void {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    // Wake up IOCP.
-    PostQueuedCompletionStatus(m_iocp, 0, 0, nullptr);
+    // Post a stop event to IOCP.
+    PostQueuedCompletionStatus(m_iocp, 0, StopKey, nullptr);
 #elif defined(__linux) || defined(__linux__)
-    // Wake up io_uring.
-    eventfd_write(m_wakeUp, 1);
+    // Post a stop event to eventfd.
+    eventfd_write(m_wakeUp, StopKey);
 #endif
 }
 
-auto SchedulerWorker::threadWorker() noexcept -> SchedulerWorker * {
-    return ThreadWorker;
+auto IoContextWorker::current() noexcept -> IoContextWorker * {
+    return threadWorker;
+}
+
+auto IoContextWorker::wakeUp() noexcept -> void {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Post a wake up event to IOCP.
+    PostQueuedCompletionStatus(m_iocp, 0, WakeUpKey, nullptr);
+#elif defined(__linux) || defined(__linux__)
+    // Post a wake up event to eventfd.
+    eventfd_write(m_wakeUp, WakeUpKey);
+#endif
 }
 
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-auto SchedulerWorker::schedule(PromiseBase &promise, std::uint32_t timeout) noexcept -> void {
+auto IoContextWorker::schedule(PromiseBase &promise, std::uint32_t timeout) noexcept -> void {
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
 
@@ -944,13 +872,7 @@ auto SchedulerWorker::schedule(PromiseBase &promise, std::uint32_t timeout) noex
 }
 #endif
 
-Scheduler::Scheduler() : m_isRunning{}, m_random{std::random_device{}()}, m_workers{} {
-    std::size_t count = std::max(std::thread::hardware_concurrency(), std::uint32_t{1});
-
-    m_workers.reserve(count);
-    for (std::size_t i = 0; i < count; ++i)
-        m_workers.emplace_back(*this, i);
-
+IoContext::IoContext() : m_isRunning{false}, m_next{0}, m_workers{} {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     // Start up Windows socket library.
     WSADATA data;
@@ -958,47 +880,43 @@ Scheduler::Scheduler() : m_isRunning{}, m_random{std::random_device{}()}, m_work
         throw std::system_error(WSAGetLastError(), std::system_category(),
                                 "Failed to start WinSock");
 #endif
+
+    std::size_t count = std::max(std::thread::hardware_concurrency(), std::uint32_t{1});
+    for (std::size_t i = 0; i < count; ++i)
+        m_workers.emplace_back(*this);
 }
 
-Scheduler::Scheduler(std::size_t count)
-    : m_isRunning{},
-      m_random{std::random_device{}()},
-      m_workers{} {
+IoContext::IoContext(std::size_t count) : m_isRunning{false}, m_next{0}, m_workers{} {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Start up Windows socket library.
+    WSADATA data;
+    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) [[unlikely]]
+        throw std::system_error(WSAGetLastError(), std::system_category(),
+                                "Failed to start WinSock");
+#endif
+
     if (count == 0)
         count = std::max(std::thread::hardware_concurrency(), std::uint32_t{1});
 
-    m_workers.reserve(count);
     for (std::size_t i = 0; i < count; ++i)
-        m_workers.emplace_back(*this, i);
-
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    // Start up Windows socket library.
-    WSADATA data;
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) [[unlikely]]
-        throw std::system_error(WSAGetLastError(), std::system_category(),
-                                "Failed to start WinSock");
-#endif
+        m_workers.emplace_back(*this);
 }
 
-Scheduler::~Scheduler() noexcept {
+IoContext::~IoContext() noexcept {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     WSACleanup();
 #endif
 }
 
-auto Scheduler::start() noexcept -> void {
+auto IoContext::start() noexcept -> void {
     if (m_isRunning.exchange(true, std::memory_order_relaxed)) [[unlikely]]
-        std::terminate();
+        return;
 
     std::vector<std::thread> threads;
     threads.reserve(m_workers.size());
 
-    for (std::size_t i = 0; i < m_workers.size(); ++i) {
-        threads.emplace_back([this, i]() noexcept -> void {
-            bindThreadToCpuCore(i);
-            m_workers[i].start();
-        });
-    }
+    for (auto &worker : m_workers)
+        threads.emplace_back(&IoContextWorker::start, &worker);
 
     for (auto &thread : threads)
         thread.join();
@@ -1006,21 +924,17 @@ auto Scheduler::start() noexcept -> void {
     m_isRunning.store(false, std::memory_order_relaxed);
 }
 
-auto Scheduler::stop() noexcept -> void {
-    for (auto &worker : m_workers)
-        worker.stop();
-}
-
-auto YieldAwaitable::await_suspend() noexcept -> void {
+auto YieldAwaitable::await_suspend(PromiseBase &promise) noexcept -> void {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    auto *worker = SchedulerWorker::threadWorker();
-    auto *iocp   = worker->ioMultiplexer();
+    m_ovlp.promise = &promise;
 
+    HANDLE iocp = IoContextWorker::current()->ioCompletionPort();
     PostQueuedCompletionStatus(iocp, 0, 0, reinterpret_cast<LPOVERLAPPED>(&m_ovlp));
 #elif defined(__linux) || defined(__linux__)
-    auto *worker = SchedulerWorker::threadWorker();
-    auto *ring   = static_cast<io_uring *>(worker->ioMultiplexer());
+    m_ovlp.promise = &promise;
 
+    // FIXME: Possible infinite loop.
+    auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
     io_uring_sqe *sqe = io_uring_get_sqe(ring);
     while (sqe == nullptr) [[unlikely]] {
         io_uring_submit(ring);
@@ -1035,26 +949,37 @@ auto YieldAwaitable::await_suspend() noexcept -> void {
 #endif
 }
 
-#if defined(__linux) || defined(__linux__)
-auto SleepAwaitable::await_suspend() noexcept -> bool {
+auto SleepAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    if (m_timeout == 0)
+        return false;
+
+    IoContextWorker::current()->schedule(promise, m_timeout);
+    return true;
+#elif defined(__linux) || defined(__linux__)
+    m_ovlp.promise = &promise;
+
     // No need to sleep.
     if (m_timeout.tv_sec == 0 && m_timeout.tv_nsec == 0) [[unlikely]]
         return false;
 
-    auto *worker = SchedulerWorker::threadWorker();
-    auto *ring   = static_cast<io_uring *>(worker->ioMultiplexer());
-
+    // FIXME: Possible infinite loop.
+    auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
     io_uring_sqe *sqe = io_uring_get_sqe(ring);
     while (sqe == nullptr) [[unlikely]] {
         io_uring_submit(ring);
         sqe = io_uring_get_sqe(ring);
     }
 
-    io_uring_prep_timeout(sqe, reinterpret_cast<__kernel_timespec *>(&m_timeout), 1, 0);
+    // Seems like that io_uring does not provide a mechanism to wait for timeout event only.
+    static_assert(sizeof(m_timeout) == sizeof(__kernel_timespec));
+    auto *timeout = reinterpret_cast<__kernel_timespec *>(&m_timeout);
+
+    io_uring_prep_timeout(sqe, timeout, std::numeric_limits<unsigned>::max(), 0);
     io_uring_sqe_set_flags(sqe, 0);
     io_uring_sqe_set_data(sqe, &m_ovlp);
 
     io_uring_submit(ring);
     return true;
-}
 #endif
+}

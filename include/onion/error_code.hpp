@@ -1,7 +1,6 @@
 #pragma once
 
-#include <cstdint>
-#include <string>
+#include <system_error>
 
 namespace onion {
 
@@ -18,7 +17,9 @@ public:
     ///   Construct a \c SystemErrorCode with the given error code.
     /// \param code
     ///   System error code value.
-    constexpr SystemErrorCode(std::int32_t code) noexcept : m_code{code} {}
+    template <typename T>
+        requires(std::is_integral_v<T> && sizeof(T) == sizeof(int))
+    constexpr SystemErrorCode(T code) noexcept : m_code{static_cast<int>(code)} {}
 
     /// \brief
     ///   Checks if this \c SystemErrorCode represents an error.
@@ -36,7 +37,7 @@ public:
     /// \return
     ///   Error code value of this \c SystemErrorCode.
     [[nodiscard]]
-    constexpr auto value() const noexcept -> std::int32_t {
+    constexpr auto value() const noexcept -> int {
         return m_code;
     }
 
@@ -75,11 +76,18 @@ public:
         return m_code <=> other.m_code;
     }
 
+    /// \brief
+    ///   Allow implicit conversion to \c std::error_code.
+    [[nodiscard]]
+    explicit operator std::error_code() const noexcept {
+        return std::error_code{m_code, std::system_category()};
+    }
+
 private:
     /// \brief
     ///   System error code. For Windows, this is the value returned by \c GetLastError(); For other
     ///   platforms, this is the value of \c errno.
-    std::int32_t m_code;
+    int m_code;
 };
 
 } // namespace onion
