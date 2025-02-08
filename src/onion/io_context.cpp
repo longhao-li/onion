@@ -102,6 +102,12 @@ static auto ioUringSetupFlags() noexcept -> std::uint32_t {
         flags |= IORING_SETUP_TASKRUN_FLAG;
     }
 
+    if (version >= makeVersion(5, 12, 0)) {
+        flags &= (~IORING_SETUP_COOP_TASKRUN);
+        flags &= (~IORING_SETUP_TASKRUN_FLAG);
+        flags |= IORING_SETUP_SQPOLL;
+    }
+
     return flags;
 }
 
@@ -125,6 +131,12 @@ static auto ioUringSetupFeatures() noexcept -> std::uint32_t {
 
     if (version >= makeVersion(5, 7, 0))
         features |= IORING_FEAT_FAST_POLL;
+
+    // Enabled with IORING_SETUP_SQPOLL.
+    if (version >= makeVersion(5, 12, 0)) {
+        features |= IORING_FEAT_SQPOLL_NONFIXED;
+        features |= IORING_FEAT_NATIVE_WORKERS;
+    }
 
     return features;
 }
