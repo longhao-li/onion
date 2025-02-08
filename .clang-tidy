@@ -1,5 +1,5 @@
 ---
-Checks: 'clang-diagnostic-*,clang-analyzer-*,cppcoreguidelines-explicit-virtual-functions,cppcoreguidelines-special-member-functions,modernize-*,-modernize-use-default-member-init,-modernize-avoid-c-arrays'
+Checks: 'clang-diagnostic-*,clang-analyzer-*,cppcoreguidelines-explicit-virtual-functions,cppcoreguidelines-special-member-functions,modernize-*,-modernize-use-default-member-init,-modernize-avoid-c-arrays,-modernize-use-transparent-functors'
 WarningsAsErrors: 'clang-diagnostic-*,clang-analyzer-*,cppcoreguidelines-explicit-virtual-functions,cppcoreguidelines-special-member-functions'
 FormatStyle: file
 ...
