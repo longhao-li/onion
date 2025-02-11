@@ -21,6 +21,7 @@ TEST_CASE("[IpAddress] IPv4 any address") {
     CHECK(!addr.isIpv4Private());
     CHECK(!addr.isIpv4LinkLocal());
     CHECK(!addr.isIpv4Multicast());
+    CHECK(addr.toString() == "0.0.0.0");
 
     CHECK(!addr.isIpv6());
     CHECK(!addr.isIpv6Loopback());
@@ -50,6 +51,7 @@ TEST_CASE("[IpAddress] IPv4 broadcast address") {
     CHECK(!addr.isIpv4Private());
     CHECK(!addr.isIpv4LinkLocal());
     CHECK(!addr.isIpv4Multicast());
+    CHECK(addr.toString() == "255.255.255.255");
 
     CHECK(!addr.isIpv6());
     CHECK(!addr.isIpv6Loopback());
@@ -78,6 +80,7 @@ TEST_CASE("[IpAddress] IPv4 link-local address") {
     CHECK(!addr.isIpv4Private());
     CHECK(addr.isIpv4LinkLocal());
     CHECK(!addr.isIpv4Multicast());
+    CHECK(addr.toString() == "169.254.0.1");
 
     CHECK(!addr.isIpv6());
     CHECK(!addr.isIpv6Loopback());
@@ -111,6 +114,7 @@ TEST_CASE("[IpAddress] IPv4 loopback address") {
     CHECK(!addr.isIpv4Private());
     CHECK(!addr.isIpv4LinkLocal());
     CHECK(!addr.isIpv4Multicast());
+    CHECK(addr.toString() == "127.0.0.1");
 
     CHECK(!addr.isIpv6());
     CHECK(!addr.isIpv6Loopback());
@@ -174,6 +178,7 @@ TEST_CASE("[IpAddress] IPv4 multicast address") {
     CHECK(!addr.isIpv4Private());
     CHECK(!addr.isIpv4LinkLocal());
     CHECK(addr.isIpv4Multicast());
+    CHECK(addr.toString() == "224.0.2.1");
 
     CHECK(!addr.isIpv6());
     CHECK(!addr.isIpv6Loopback());
@@ -199,6 +204,7 @@ TEST_CASE("[IpAddress] IPv4 private address") {
     CHECK(a.isIpv4Private());
     CHECK(!a.isIpv4LinkLocal());
     CHECK(!a.isIpv4Multicast());
+    CHECK(a.toString() == "10.114.5.14");
 
     CHECK(!a.isIpv6());
     CHECK(!a.isIpv6Loopback());
@@ -218,6 +224,7 @@ TEST_CASE("[IpAddress] IPv4 private address") {
     CHECK(b.isIpv4Private());
     CHECK(!b.isIpv4LinkLocal());
     CHECK(!b.isIpv4Multicast());
+    CHECK(b.toString() == "172.31.0.1");
 
     CHECK(!b.isIpv6());
     CHECK(!b.isIpv6Loopback());
@@ -238,6 +245,7 @@ TEST_CASE("[IpAddress] IPv4 private address") {
     CHECK(c.isIpv4Private());
     CHECK(!c.isIpv4LinkLocal());
     CHECK(!c.isIpv4Multicast());
+    CHECK(c.toString() == "192.168.0.1");
 
     CHECK(!c.isIpv6());
     CHECK(!c.isIpv6Loopback());
@@ -263,6 +271,7 @@ TEST_CASE("[IpAddress] IPv6 any address") {
     CHECK(!addr.isIpv4Private());
     CHECK(!addr.isIpv4LinkLocal());
     CHECK(!addr.isIpv4Multicast());
+    CHECK(addr.toString() == "::");
 
     CHECK(addr.isIpv6());
     CHECK(!addr.isIpv6Loopback());
@@ -299,6 +308,7 @@ TEST_CASE("[IpAddress] IPv6 loopback address") {
     CHECK(!addr.isIpv4Private());
     CHECK(!addr.isIpv4LinkLocal());
     CHECK(!addr.isIpv4Multicast());
+    CHECK(addr.toString() == "::1");
 
     CHECK(addr.isIpv6());
     CHECK(addr.isIpv6Loopback());

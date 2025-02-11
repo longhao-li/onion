@@ -1520,7 +1520,7 @@ public:
         ///   Reference to the hash map element.
         [[nodiscard]]
         auto operator*() const noexcept -> reference {
-            return {*m_internal.first, *m_internal.second};
+            return {(*m_internal).first, (*m_internal).second};
         }
 
         /// \brief

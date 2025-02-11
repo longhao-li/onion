@@ -365,6 +365,13 @@ public:
     }
 
     /// \brief
+    ///   Get string representation of this IP address.
+    /// \return
+    ///   The string representation of this IP address.
+    [[nodiscard]]
+    ONION_API auto toString() const noexcept -> std::string;
+
+    /// \brief
     ///   Checks if this \c ip_address is the same as another one.
     /// \param other
     ///   The \c ip_address to be compared with.
@@ -617,6 +624,13 @@ public:
             return;
         m_addr.v6.scopeId = id;
     }
+
+    /// \brief
+    ///   Get string representation of this Internet socket address.
+    /// \return
+    ///   The string representation of this Internet socket address.
+    [[nodiscard]]
+    ONION_API auto toString() const noexcept -> std::string;
 
     /// \brief
     ///   Checks if this Internet socket address is the same as another one.
@@ -1004,6 +1018,24 @@ public:
         -> std::expected<std::uint32_t, SystemErrorCode>;
 
     /// \brief
+    ///   Send data to the peer TCP endpoint. This method will block current thread until the data
+    ///   is sent or any error occurs.
+    ///
+    ///   This method is just an alias of \c send() so that \c TcpStream object could be used as a
+    ///   stream type.
+    /// \param data
+    ///   Pointer to start of data to send.
+    /// \param size
+    ///   Size in byte of data to send.
+    /// \return
+    ///   Number of bytes sent if succeeded. Otherwise, return a system error code that represents
+    ///   the IO error.
+    auto write(const void *data, std::uint32_t size) noexcept
+        -> std::expected<std::uint32_t, SystemErrorCode> {
+        return this->send(data, size);
+    }
+
+    /// \brief
     ///   Send data to the peer TCP endpoint asynchronously. This method will suspend this coroutine
     ///   until the data is sent or any error occurs.
     /// \param data
@@ -1015,6 +1047,23 @@ public:
     ///   the IO error.
     auto sendAsync(const void *data, std::uint32_t size) noexcept -> SendAwaitable {
         return {m_socket, data, size};
+    }
+
+    /// \brief
+    ///   Send data to the peer TCP endpoint asynchronously. This method will suspend this coroutine
+    ///   until the data is sent or any error occurs.
+    ///
+    ///   This method is just an alias of \c sendAsync() so that \c TcpStream object could be used
+    ///   as a stream type.
+    /// \param data
+    ///   Pointer to start of data to send.
+    /// \param size
+    ///   Size in byte of data to send.
+    /// \return
+    ///   Number of bytes sent if succeeded. Otherwise, return a system error code that represents
+    ///   the IO error.
+    auto writeAsync(const void *data, std::uint32_t size) noexcept -> SendAwaitable {
+        return this->sendAsync(data, size);
     }
 
     /// \brief
@@ -1031,6 +1080,24 @@ public:
         -> std::expected<std::uint32_t, SystemErrorCode>;
 
     /// \brief
+    ///   Receive data from the peer TCP endpoint. This method will block current thread until the
+    ///   data is received or any error occurs.
+    ///
+    ///   This method is just an alias of \c receive() so that \c TcpStream object could be used as
+    ///   a stream type.
+    /// \param[out] buffer
+    ///   Pointer to start of buffer to receive data.
+    /// \param size
+    ///   Size in byte of buffer to store the received data.
+    /// \return
+    ///   Number of bytes received if succeeded. Otherwise, return a system error code that
+    ///   represents the IO error.
+    auto read(void *buffer, std::uint32_t size) noexcept
+        -> std::expected<std::uint32_t, SystemErrorCode> {
+        return this->receive(buffer, size);
+    }
+
+    /// \brief
     ///   Receive data from the peer TCP endpoint asynchronously. This method will suspend this
     ///   coroutine until the data is received or any error occurs.
     /// \param[out] buffer
@@ -1042,6 +1109,23 @@ public:
     ///   represents the IO error.
     auto receiveAsync(void *buffer, std::uint32_t size) noexcept -> ReceiveAwaitable {
         return {m_socket, buffer, size};
+    }
+
+    /// \brief
+    ///   Receive data from the peer TCP endpoint asynchronously. This method will suspend this
+    ///   coroutine until the data is received or any error occurs.
+    ///
+    ///   This method is just an alias of \c receiveAsync() so that \c TcpStream object could be
+    ///   used as a stream type.
+    /// \param[out] buffer
+    ///   Pointer to start of buffer to receive data.
+    /// \param size
+    ///   Size in byte of buffer to store the received data.
+    /// \return
+    ///   Number of bytes received if succeeded. Otherwise, return a system error code that
+    ///   represents the IO error.
+    auto readAsync(void *buffer, std::uint32_t size) noexcept -> ReceiveAwaitable {
+        return this->receiveAsync(buffer, size);
     }
 
     /// \brief

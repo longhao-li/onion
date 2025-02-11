@@ -78,8 +78,7 @@ public:
 
     /// \brief
     ///   Allow implicit conversion to \c std::error_code.
-    [[nodiscard]]
-    explicit operator std::error_code() const noexcept {
+    [[nodiscard]] operator std::error_code() const noexcept {
         return std::error_code{m_code, std::system_category()};
     }
 

@@ -13,6 +13,7 @@ option(ONION_WARNINGS_AS_ERRORS "Treat warnings as errors." OFF)
 option(ONION_ENABLE_LTO "Enable link-time optimization for onion shared library." OFF)
 option(ONION_ENABLE_ASAN "Enable address sanitizer for onion. Cannot be enabled with LTO" OFF)
 option(ONION_BUILD_TESTS "Build onion tests." OFF)
+option(ONION_BUILD_EXAMPLES "Build onion examples." OFF)
 
 # Build onion library.
 file(GLOB_RECURSE ONION_HEADER_FILES "include/*.hpp")
@@ -71,7 +72,7 @@ target_include_directories(
 include(CheckCXXCompilerFlag)
 
 if(MSVC)
-    target_compile_options(onion PRIVATE /W4 /permissive-)
+    target_compile_options(onion PRIVATE /W4 /permissive- /wd4324)
 
     # Treat warnings as errors.
     if(ONION_WARNINGS_AS_ERRORS)
@@ -170,4 +171,9 @@ if(ONION_BUILD_TESTS)
     endif()
 
     doctest_discover_tests(onion-test)
+endif()
+
+# Build examples.
+if(ONION_BUILD_EXAMPLES)
+    add_subdirectory(examples)
 endif()

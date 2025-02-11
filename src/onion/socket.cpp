@@ -220,6 +220,47 @@ IpAddress::IpAddress(std::string_view address) : m_isIpv6{}, m_addr{} {
         throw std::invalid_argument("Invalid IP address: " + std::string(address));
 }
 
+auto IpAddress::toString() const noexcept -> std::string {
+    std::array<char, INET6_ADDRSTRLEN + 1> buffer{};
+    inet_ntop(m_isIpv6 ? AF_INET6 : AF_INET, &m_addr, buffer.data(), buffer.size());
+    std::size_t length = std::char_traits<char>::length(buffer.data());
+    return {buffer.data(), length};
+}
+
+auto InetAddress::toString() const noexcept -> std::string {
+    std::array<char, INET6_ADDRSTRLEN + 9> buffer{};
+    std::size_t length;
+    if (isIpv4()) {
+        inet_ntop(AF_INET, &m_addr.v4.address, buffer.data(), INET6_ADDRSTRLEN);
+        length = std::char_traits<char>::length(buffer.data());
+    } else {
+        buffer[0] = '[';
+        inet_ntop(AF_INET6, &m_addr.v6.address, buffer.data() + 1, INET6_ADDRSTRLEN);
+        length           = std::char_traits<char>::length(buffer.data());
+        buffer[length++] = ']';
+    }
+
+    buffer[length++] = ':';
+
+    // Parse port.
+    std::uint16_t port = toHostEndian(m_port);
+
+    auto first = buffer.begin() + length;
+    auto last  = first;
+    while (port != 0) {
+        *last++ = static_cast<char>((port % 10) + '0');
+        port /= 10;
+    }
+
+    if (first == last) [[unlikely]]
+        *last++ = '0';
+    else
+        std::ranges::reverse(first, last);
+
+    length = static_cast<std::size_t>(last - buffer.begin());
+    return {buffer.data(), length};
+}
+
 auto SendAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     m_ovlp.promise = &promise;

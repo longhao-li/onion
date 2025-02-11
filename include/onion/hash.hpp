@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <typeindex>
 
 namespace onion {
 
@@ -139,6 +140,26 @@ struct Hash<std::basic_string_view<Element, Traits>> {
     auto operator()(const std::basic_string<Element, Traits, Allocator> &value) const noexcept
         -> result_type {
         return ::onion::hash(value.data(), value.size() * sizeof(Element));
+    }
+};
+
+/// \class Hash
+/// \brief
+///   Hasher for \c std::type_index.
+template <>
+struct Hash<std::type_index> {
+    using argument_type = std::type_index;
+    using result_type   = std::size_t;
+
+    /// \brief
+    ///   Calculate hash value for the given type index.
+    /// \param value
+    ///   Type index to hash.
+    /// \return
+    ///   Hash value of the type index.
+    [[nodiscard]]
+    auto operator()(const std::type_index &value) const noexcept -> std::size_t {
+        return ::onion::hash(value.name(), std::char_traits<char>::length(value.name()));
     }
 };
 

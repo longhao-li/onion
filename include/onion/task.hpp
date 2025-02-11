@@ -501,3 +501,112 @@ public:
 
 } // namespace detail
 } // namespace onion
+
+namespace onion::detail {
+
+/// \struct is_coroutine_handle
+/// \brief
+///   Traits type to check if a type is a C++20 coroutine handle type.
+template <typename T>
+struct is_coroutine_handle : std::false_type {};
+
+/// \struct is_coroutine_handle
+/// \brief
+///   Traits type to check if a type is a C++20 coroutine handle type.
+template <typename T>
+struct is_coroutine_handle<std::coroutine_handle<T>> : std::true_type {};
+
+/// \brief
+///   Helper variable template to check if a type is a C++20 coroutine handle type.
+template <typename T>
+inline constexpr bool is_coroutine_handle_v = is_coroutine_handle<T>::value;
+
+/// \struct is_task
+/// \brief
+///   Traits type to check if a type is a \c Task type.
+template <typename T>
+struct is_task : std::false_type {};
+
+/// \struct is_task
+/// \brief
+///   Traits type to check if a type is a \c Task type.
+template <typename T>
+struct is_task<Task<T>> : std::true_type {};
+
+/// \brief
+///   Helper variable template to check if a type is a \c Task type.
+template <typename T>
+inline constexpr bool is_task_v = is_task<T>::value;
+
+/// \struct is_awaitable
+/// \brief
+///   Traits type to check if a type is a C++20 coroutine awaitable type.
+template <typename T, typename = void>
+struct is_awaitable : std::false_type {};
+
+/// \struct is_awaitable
+/// \brief
+///   Traits type to check if a type is a C++20 coroutine awaitable type.
+template <typename T>
+struct is_awaitable<
+    T,
+    std::void_t<
+        std::enable_if_t<std::conjunction_v<
+            std::is_same<decltype(std::declval<T>().await_ready()), bool>,
+            std::disjunction<
+                std::is_same<decltype(std::declval<T>().await_suspend(
+                                 std::declval<std::coroutine_handle<detail::Promise<void>>>())),
+                             void>,
+                std::is_same<decltype(std::declval<T>().await_suspend(
+                                 std::declval<std::coroutine_handle<detail::Promise<void>>>())),
+                             bool>,
+                is_coroutine_handle<decltype(std::declval<T>().await_suspend(
+                    std::declval<std::coroutine_handle<detail::Promise<void>>>()))>>>>,
+        decltype(std::declval<T>().await_resume())>> : std::true_type {};
+
+/// \brief
+///   Helper variable template to check if a type is a C++20 coroutine awaitable type.
+template <typename T>
+inline constexpr bool is_awaitable_v = is_awaitable<T>::value;
+
+/// \struct task_result
+/// \brief
+///   Traits type to determine the result type of a task.
+template <typename T>
+struct task_result {};
+
+/// \struct task_result
+/// \brief
+///   Traits type to determine the result type of a task.
+template <typename T>
+struct task_result<Task<T>> {
+    using type = T;
+};
+
+/// \struct task_result_t
+/// \brief
+///   Helper alias to get the result type of a task.
+template <typename T>
+using task_result_t = typename task_result<T>::type;
+
+/// \struct awaitable_result
+/// \brief
+///   Traits type to determine the result type of an awaitable type.
+template <typename T, typename = void>
+struct awaitable_result {};
+
+/// \struct awaitable_result
+/// \brief
+///   Traits type to determine the result type of an awaitable type.
+template <typename T>
+struct awaitable_result<T, std::enable_if_t<is_awaitable_v<T>>> {
+    using type = decltype(std::declval<T>().await_resume());
+};
+
+/// \struct awaitable_result_t
+/// \brief
+///   Helper alias to get the result type of an awaitable type.
+template <typename T>
+using awaitable_result_t = typename awaitable_result<T>::type;
+
+} // namespace onion::detail
