@@ -2,6 +2,7 @@
 
 #include "task.hpp"
 
+#include <cstring>
 #include <expected>
 #include <system_error>
 
@@ -253,6 +254,181 @@ struct is_input_output_stream : std::conjunction<is_input_stream<T>, is_output_s
 template <typename T>
 inline constexpr bool is_input_output_stream_v = is_input_output_stream<T>::value;
 
+/// \brief
+///   Helper function to acquire destroy function for a stream object.
+/// \tparam T
+///   The type of the stream object.
+/// \param[in] object
+///   Pointer to the stream object to destroy.
+template <typename T>
+auto streamDestroyFunc(void *object) noexcept -> void {
+    delete static_cast<T *>(object);
+}
+
+/// \brief
+///   Helper function to acquire read function for a stream object.
+/// \tparam T
+///   The type of the stream object.
+/// \param object
+///   Pointer to the stream object to read from.
+/// \param buffer
+///   Pointer to the buffer to store the read data.
+/// \param size
+///   Maximum size in byte of data that could be read.
+/// \return
+///   The actual number of bytes read from the stream. If an error occurs, an error code will be
+///   returned.
+template <typename T>
+auto streamReadFunc(void *object, void *buffer, std::uint32_t size)
+    -> std::expected<std::uint32_t, std::error_code> {
+    return static_cast<T *>(object)->read(buffer, size);
+}
+
+/// \brief
+///   Helper function to acquire write function for a stream object.
+/// \tparam T
+///   The type of the stream object.
+/// \param object
+///   Pointer to the stream object to write to.
+/// \param data
+///   Pointer to the data to write to the stream.
+/// \param size
+///   Size in byte of the data to write.
+/// \return
+///   The actual number of bytes written to the stream. If an error occurs, an error code will be
+///   returned.
+template <typename T>
+auto streamWriteFunc(void *object, const void *data, std::uint32_t size)
+    -> std::expected<std::uint32_t, std::error_code> {
+    return static_cast<T *>(object)->write(data, size);
+}
+
+/// \brief
+///   Helper function to acquire readAsync function for a stream object.
+/// \tparam T
+///   The type of the stream object.
+/// \param object
+///   Pointer to the stream object to read from.
+/// \param buffer
+///   Pointer to the buffer to store the read data.
+/// \param size
+///   Maximum size in byte of data that could be read.
+/// \return
+///   The actual number of bytes read from the stream. If an error occurs, an error code will be
+///   returned.
+template <typename T>
+auto streamReadAsyncFuncHelper(void *object, void *buffer, std::uint32_t size, char)
+    -> Task<std::expected<std::uint32_t, std::error_code>> {
+    auto result = co_await static_cast<T *>(object)->readAsync(buffer, size);
+    co_return result;
+}
+
+/// \brief
+///   Helper function to acquire readAsync function for a stream object.
+/// \tparam T
+///   The type of the stream object.
+/// \param object
+///   Pointer to the stream object to read from.
+/// \param buffer
+///   Pointer to the buffer to store the read data.
+/// \param size
+///   Maximum size in byte of data that could be read.
+/// \return
+///   The actual number of bytes read from the stream. If an error occurs, an error code will be
+///   returned.
+template <typename T>
+auto streamReadAsyncFuncHelper(void *object, void *buffer, std::uint32_t size, int)
+    -> Task<std::expected<std::uint32_t, std::error_code>> {
+    return static_cast<T *>(object)->readAsync(buffer, size);
+}
+
+/// \brief
+///   Helper function to acquire readAsync function for a stream object.
+/// \tparam T
+///   The type of the stream object.
+/// \param object
+///   Pointer to the stream object to read from.
+/// \param buffer
+///   Pointer to the buffer to store the read data.
+/// \param size
+///   Maximum size in byte of data that could be read.
+/// \return
+///   The actual number of bytes read from the stream. If an error occurs, an error code will be
+///   returned.
+template <typename T>
+auto streamReadAsyncFunc(void *object, void *buffer, std::uint32_t size)
+    -> Task<std::expected<std::uint32_t, std::error_code>> {
+    using dummy_t = std::conditional_t<
+        std::is_same_v<decltype(std::declval<T>().readAsync(std::declval<void *>(),
+                                                            std::declval<std::uint32_t>())),
+                       Task<std::expected<std::uint32_t, std::error_code>>>,
+        int, char>;
+    return streamReadAsyncFuncHelper<T>(object, buffer, size, dummy_t{});
+}
+
+/// \brief
+///   Helper function to acquire writeAsync function for a stream object.
+/// \tparam T
+///   The type of the stream object.
+/// \param object
+///   Pointer to the stream object to write to.
+/// \param data
+///   Pointer to the data to write to the stream.
+/// \param size
+///   Size in byte of the data to write.
+/// \return
+///   The actual number of bytes written to the stream. If an error occurs, an error code will be
+///   returned.
+template <typename T>
+auto streamWriteAsyncFuncHelper(void *object, const void *data, std::uint32_t size, char)
+    -> Task<std::expected<std::uint32_t, std::error_code>> {
+    auto result = co_await static_cast<T *>(object)->writeAsync(data, size);
+    co_return result;
+}
+
+/// \brief
+///   Helper function to acquire writeAsync function for a stream object.
+/// \tparam T
+///   The type of the stream object.
+/// \param object
+///   Pointer to the stream object to write to.
+/// \param data
+///   Pointer to the data to write to the stream.
+/// \param size
+///   Size in byte of the data to write.
+/// \return
+///   The actual number of bytes written to the stream. If an error occurs, an error code will be
+///   returned.
+template <typename T>
+auto streamWriteAsyncFuncHelper(void *object, const void *data, std::uint32_t size, int)
+    -> Task<std::expected<std::uint32_t, std::error_code>> {
+    return static_cast<T *>(object)->writeAsync(data, size);
+}
+
+/// \brief
+///   Helper function to acquire writeAsync function for a stream object.
+/// \tparam T
+///   The type of the stream object.
+/// \param object
+///   Pointer to the stream object to write to.
+/// \param data
+///   Pointer to the data to write to the stream.
+/// \param size
+///   Size in byte of the data to write.
+/// \return
+///   The actual number of bytes written to the stream. If an error occurs, an error code will be
+///   returned.
+template <typename T>
+auto streamWriteAsyncFunc(void *object, const void *data, std::uint32_t size)
+    -> Task<std::expected<std::uint32_t, std::error_code>> {
+    using dummy_t = std::conditional_t<
+        std::is_same_v<decltype(std::declval<T>().writeAsync(std::declval<const void *>(),
+                                                             std::declval<std::uint32_t>())),
+                       Task<std::expected<std::uint32_t, std::error_code>>>,
+        int, char>;
+    return streamWriteAsyncFuncHelper<T>(object, data, size, dummy_t{});
+}
+
 } // namespace onion::detail
 
 namespace onion {
@@ -283,11 +459,11 @@ public:
         requires(detail::is_input_output_stream_v<T>)
     Stream(T *stream) noexcept
         : m_object{stream},
-          m_destroy{&destroyFunc<T>},
-          m_read{&readFunc<T>},
-          m_write{&writeFunc<T>},
-          m_readAsync{&ReadAsyncHelper<T>::func},
-          m_writeAsync{&WriteAsyncHelper<T>::func} {}
+          m_destroy{&detail::streamDestroyFunc<T>},
+          m_read{&detail::streamReadFunc<T>},
+          m_write{&detail::streamWriteFunc<T>},
+          m_readAsync{&detail::streamReadAsyncFunc<T>},
+          m_writeAsync{&detail::streamWriteAsyncFunc<T>} {}
 
     /// \brief
     ///   Create a null stream.
@@ -425,109 +601,6 @@ public:
 
 private:
     /// \brief
-    ///   Helper function to acquire destroy function for a stream object.
-    /// \tparam T
-    ///   The type of the stream object.
-    /// \param[in] object
-    ///   Pointer to the stream object to destroy.
-    template <typename T>
-    static auto destroyFunc(void *object) noexcept -> void {
-        delete static_cast<T *>(object);
-    }
-
-    /// \brief
-    ///   Helper function to acquire read function for a stream object.
-    /// \tparam T
-    ///   The type of the stream object.
-    /// \param object
-    ///   Pointer to the stream object to read from.
-    /// \param buffer
-    ///   Pointer to the buffer to store the read data.
-    /// \param size
-    ///   Maximum size in byte of data that could be read.
-    /// \return
-    ///   The actual number of bytes read from the stream. If an error occurs, an error code will be
-    ///   returned.
-    template <typename T>
-    static auto readFunc(void *object, void *buffer, std::uint32_t size)
-        -> std::expected<std::uint32_t, std::error_code> {
-        return static_cast<T *>(object)->read(buffer, size);
-    }
-
-    /// \brief
-    ///   Helper function to acquire write function for a stream object.
-    /// \tparam T
-    ///   The type of the stream object.
-    /// \param object
-    ///   Pointer to the stream object to write to.
-    /// \param data
-    ///   Pointer to the data to write to the stream.
-    /// \param size
-    ///   Size in byte of the data to write.
-    /// \return
-    ///   The actual number of bytes written to the stream. If an error occurs, an error code will
-    ///   be returned.
-    template <typename T>
-    static auto writeFunc(void *object, const void *data, std::uint32_t size)
-        -> std::expected<std::uint32_t, std::error_code> {
-        return static_cast<T *>(object)->write(data, size);
-    }
-
-    /// \struct ReadAsyncHelper
-    /// \brief
-    ///   Helper class to acquire readAsync function for a stream object.
-    template <typename T, typename = void>
-    struct ReadAsyncHelper {
-        static auto func(void *object, void *buffer, std::uint32_t size)
-            -> Task<std::expected<std::uint32_t, std::error_code>> {
-            co_return co_await static_cast<T *>(object)->readAsync(buffer, size);
-        }
-    };
-
-    /// \struct ReadAsyncHelper
-    /// \brief
-    ///   Helper class to acquire readAsync function for a stream object.
-    template <typename T>
-    struct ReadAsyncHelper<T,
-                           std::enable_if_t<std::is_same_v<
-                               decltype(std::declval<T>().readAsync(std::declval<void *>(),
-                                                                    std::declval<std::uint32_t>())),
-                               Task<std::expected<std::uint32_t, std::error_code>>>>> {
-        static auto func(void *object, void *buffer, std::uint32_t size)
-            -> Task<std::expected<std::uint32_t, std::error_code>> {
-            return static_cast<T *>(object)->readAsync(buffer, size);
-        }
-    };
-
-    /// \struct WriteAsyncHelper
-    /// \brief
-    ///   Helper class to acquire writeAsync function for a stream object.
-    template <typename T, typename = void>
-    struct WriteAsyncHelper {
-        static auto func(void *object, const void *data, std::uint32_t size)
-            -> Task<std::expected<std::uint32_t, std::error_code>> {
-            co_return co_await static_cast<T *>(object)->writeAsync(data, size);
-        }
-    };
-
-    /// \struct WriteAsyncHelper
-    /// \brief
-    ///   Helper class to acquire writeAsync function for a stream object.
-    template <typename T>
-    struct WriteAsyncHelper<
-        T,
-        std::enable_if_t<
-            std::is_same_v<decltype(std::declval<T>().writeAsync(std::declval<const void *>(),
-                                                                 std::declval<std::uint32_t>())),
-                           Task<std::expected<std::uint32_t, std::error_code>>>>> {
-        static auto func(void *object, const void *data, std::uint32_t size)
-            -> Task<std::expected<std::uint32_t, std::error_code>> {
-            return static_cast<T *>(object)->writeAsync(data, size);
-        }
-    };
-
-private:
-    /// \brief
     ///   Pointer to the actual stream object.
     void *m_object;
 
@@ -553,6 +626,242 @@ private:
     ///   Pointer to the function that writes some bytes to the stream object asynchronously.
     auto (*m_writeAsync)(void *, const void *, std::uint32_t)
         -> Task<std::expected<std::uint32_t, std::error_code>>;
+};
+
+/// \class StringStream
+/// \brief
+///   Stream type for reading and writing string.
+class StringStream {
+public:
+    /// \class ReadAwaitable
+    /// \brief
+    ///   Dummy awaitable type for asynchronous reading operation.
+    class [[nodiscard]] ReadAwaitable {
+    public:
+        /// \brief
+        ///   Create a dummy awaitable for asynchronous reading operation.
+        /// \param[in] stream
+        ///   The \c StringStream to read from.
+        /// \param[out] buffer
+        ///   Pointer to the buffer to store the read data.
+        /// \param size
+        ///   Maximum size in byte of data that could be read.
+        ReadAwaitable(StringStream &stream, void *buffer, std::uint32_t size) noexcept
+            : m_stream{&stream},
+              m_buffer{buffer},
+              m_size{size} {}
+
+        /// \brief
+        ///   C++20 coroutine API. \c StringStream is always ready for reading.
+        static constexpr auto await_ready() noexcept -> bool {
+            return true;
+        }
+
+        /// \brief
+        ///   C++20 coroutine API. \c StringStream does not suspend for reading.
+        template <typename T>
+        static constexpr auto await_suspend(T) noexcept -> bool {
+            return false;
+        }
+
+        /// \brief
+        ///   C++20 coroutine API. Read some data from the \c StringStream.
+        /// \return
+        ///   The actual number of bytes read from the \c StringStream.
+        auto await_resume() noexcept -> std::uint32_t {
+            return m_stream->read(m_buffer, m_size);
+        }
+
+    private:
+        StringStream *m_stream;
+        void *m_buffer;
+        std::uint32_t m_size;
+    };
+
+    /// \class WriteAwaitable
+    /// \brief
+    ///   Dummy awaitable type for asynchronous writing operation.
+    class [[nodiscard]] WriteAwaitable {
+    public:
+        /// \brief
+        ///   Create a dummy awaitable for asynchronous writing operation.
+        /// \param[in] stream
+        ///   The \c StringStream to write to.
+        /// \param[in] data
+        ///   Pointer to the data to write to the \c StringStream.
+        /// \param size
+        ///   Size in byte of the data to write.
+        WriteAwaitable(StringStream &stream, const void *data, std::uint32_t size) noexcept
+            : m_stream{&stream},
+              m_data{data},
+              m_size{size} {}
+
+        /// \brief
+        ///   C++20 coroutine API. \c StringStream is always ready for writing.
+        static constexpr auto await_ready() noexcept -> bool {
+            return true;
+        }
+
+        /// \brief
+        ///   C++20 coroutine API. \c StringStream does not suspend for writing.
+        template <typename T>
+        static constexpr auto await_suspend(T) noexcept -> bool {
+            return false;
+        }
+
+        /// \brief
+        ///   C++20 coroutine API. Write some data to the \c StringStream.
+        /// \return
+        ///   The actual number of bytes written to the \c StringStream.
+        auto await_resume() noexcept -> std::uint32_t {
+            return m_stream->write(m_data, m_size);
+        }
+
+    private:
+        StringStream *m_stream;
+        const void *m_data;
+        std::uint32_t m_size;
+    };
+
+public:
+    /// \brief
+    ///   Create an empty \c StringBuffer.
+    StringStream() noexcept
+        : m_buffer{nullptr},
+          m_bufferEnd{nullptr},
+          m_begin{nullptr},
+          m_end{nullptr} {}
+
+    /// \brief
+    ///   Create a \c StringBuffer from a string.
+    /// \param str
+    ///   The string to be stored in this \c StringBuffer from.
+    ONION_API StringStream(std::string_view str) noexcept;
+
+    /// \brief
+    ///   Copy constructor of \c StringBuffer.
+    ONION_API StringStream(const StringStream &other) noexcept;
+
+    /// \brief
+    ///   Move constructor of \c StringBuffer.
+    /// \param[inout] other
+    ///   The \c StringBuffer to move from. The moved \c StringBuffer will be empty.
+    StringStream(StringStream &&other) noexcept
+        : m_buffer{other.m_buffer},
+          m_bufferEnd{other.m_bufferEnd},
+          m_begin{other.m_begin},
+          m_end{other.m_end} {
+        other.m_buffer    = nullptr;
+        other.m_bufferEnd = nullptr;
+        other.m_begin     = nullptr;
+        other.m_end       = nullptr;
+    }
+
+    /// \brief
+    ///   Destroy this \c StringBuffer.
+    ONION_API ~StringStream() noexcept;
+
+    /// \brief
+    ///   Copy assignment operator of \c StringBuffer.
+    /// \param other
+    ///   The \c StringBuffer to copy from.
+    /// \return
+    ///   Reference to this \c StringBuffer.
+    ONION_API auto operator=(const StringStream &other) noexcept -> StringStream &;
+
+    /// \brief
+    ///   Move assignment operator of \c StringBuffer.
+    /// \param[inout] other
+    ///   The \c StringBuffer to move from. The moved \c StringBuffer will be empty.
+    /// \return
+    ///   Reference to this \c StringBuffer.
+    ONION_API auto operator=(StringStream &&other) noexcept -> StringStream &;
+
+    /// \brief
+    ///   Checks if this \c StringBuffer is empty.
+    /// \retval true
+    ///   This \c StringBuffer is empty.
+    /// \retval false
+    ///   This \c StringBuffer is not empty.
+    [[nodiscard]]
+    auto empty() const noexcept -> bool {
+        return m_begin == m_end;
+    }
+
+    /// \brief
+    ///   Get number of bytes stored in this \c StringBuffer.
+    /// \return
+    ///   Number of bytes stored in this \c StringBuffer.
+    [[nodiscard]]
+    auto size() const noexcept -> std::size_t {
+        return static_cast<std::size_t>(m_end - m_begin);
+    }
+
+    /// \brief
+    ///   Get maximum number of bytes that could be stored in this \c StringBuffer without
+    ///   reallocation.
+    /// \return
+    ///   Maximum number of bytes that could be stored in this \c StringBuffer.
+    [[nodiscard]]
+    auto capacity() const noexcept -> std::size_t {
+        return static_cast<std::size_t>(m_bufferEnd - m_begin);
+    }
+
+    /// \brief
+    ///   Reserve space for storing data in this \c StringBuffer.
+    /// \param capacity
+    ///   The new capacity of this \c StringBuffer.
+    ONION_API auto reserve(std::size_t capacity) noexcept -> void;
+
+    /// \brief
+    ///   Read some data from this \c StringBuffer.
+    /// \param[out] buffer
+    ///   Pointer to start of the buffer to store the read data.
+    /// \param size
+    ///   Maximum size in byte of data that could be read.
+    /// \return
+    ///   The actual number of bytes read from the \c StringBuffer.
+    ONION_API auto read(void *buffer, std::uint32_t size) noexcept -> std::uint32_t;
+
+    /// \brief
+    ///   Read some data from this \c StringBuffer. This is actually the same as \c read.
+    /// \param[out] buffer
+    ///   Pointer to start of the buffer to store the read data.
+    /// \param size
+    ///   Maximum size in byte of data that could be read.
+    /// \return
+    ///   The actual number of bytes read from the \c StringBuffer.
+    auto readAsync(void *buffer, std::uint32_t size) noexcept -> ReadAwaitable {
+        return {*this, buffer, size};
+    }
+
+    /// \brief
+    ///   Write some data to this \c StringBuffer.
+    /// \param[in] data
+    ///   Pointer to the data to write to the \c StringBuffer.
+    /// \param size
+    ///   Size in byte of the data to write.
+    /// \return
+    ///   The actual number of bytes written to the \c StringBuffer.
+    ONION_API auto write(const void *data, std::uint32_t size) noexcept -> std::uint32_t;
+
+    /// \brief
+    ///   Write some data to this \c StringBuffer. This is actually the same as \c write.
+    /// \param[in] data
+    ///   Pointer to the data to write to the \c StringBuffer.
+    /// \param size
+    ///   Size in byte of the data to write.
+    /// \return
+    ///   The actual number of bytes written to the \c StringBuffer.
+    auto writeAsync(const void *data, std::uint32_t size) noexcept -> WriteAwaitable {
+        return {*this, data, size};
+    }
+
+private:
+    char *m_buffer;
+    char *m_bufferEnd;
+    char *m_begin;
+    char *m_end;
 };
 
 } // namespace onion
