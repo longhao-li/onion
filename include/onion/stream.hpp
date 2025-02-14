@@ -2,6 +2,7 @@
 
 #include "task.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include <expected>
 #include <system_error>
