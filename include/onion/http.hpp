@@ -2,6 +2,7 @@
 
 #include "map.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <optional>
 
@@ -141,6 +142,19 @@ enum class HttpStatus : std::uint16_t {
     LoopDetected                  = 508,
     NotExtended                   = 510,
     NetworkAuthenticationRequired = 511,
+};
+
+/// \struct HttpVersion
+/// \brief
+///   A struct that represents the HTTP version.
+struct HttpVersion {
+    /// \brief
+    ///   Major HTTP version number. Currently only HTTP/1.x is supported.
+    std::uint8_t major;
+
+    /// \brief
+    ///   Minor HTTP version number. Currently only HTTP/1.x is supported.
+    std::uint8_t minor;
 };
 
 /// \class HttpHeaders
@@ -395,6 +409,486 @@ private:
     ///   We store headers in a case-insensitive manner. The HTTP standard allows multiple headers
     ///   and we compress them into one element in the hash map with the values separated by comma.
     container_type m_headers;
+};
+
+/// \class HttpQueries
+/// \brief
+///   Queries of HTTP URI. This is implemented as an ordered flat multimap.
+class HttpQueries {
+public:
+    using key_type               = std::string;
+    using mapped_type            = std::string;
+    using value_type             = std::pair<key_type, mapped_type>;
+    using key_compare            = std::less<>;
+    using reference              = std::pair<const key_type &, mapped_type &>;
+    using const_reference        = std::pair<const key_type &, const mapped_type &>;
+    using size_type              = std::size_t;
+    using difference_type        = std::ptrdiff_t;
+    using container_type         = std::vector<value_type>;
+    using iterator               = typename container_type::iterator;
+    using const_iterator         = typename container_type::const_iterator;
+    using reverse_iterator       = typename container_type::reverse_iterator;
+    using const_reverse_iterator = typename container_type::const_reverse_iterator;
+
+    /// \brief
+    ///   Create an empty HTTP query map.
+    HttpQueries() noexcept = default;
+
+    /// \brief
+    ///   Create an HTTP query map from a range of key-value pairs.
+    /// \tparam InputIt
+    ///   Type of the input iterator.
+    /// \param first
+    ///   Iterator to the first element of the range.
+    /// \param last
+    ///   Iterator to the place after the last element of the range.
+    template <std::input_iterator InputIt>
+    HttpQueries(InputIt first, InputIt last) : m_storage{first, last} {
+        const auto compare = [](const value_type &lhs, const value_type &rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs.first);
+        };
+        std::ranges::sort(m_storage, compare);
+    }
+
+    /// \brief
+    ///   Create an HTTP query map from an initializer list of key-value pairs.
+    /// \param list
+    ///   Initializer list of key-value pairs.
+    HttpQueries(std::initializer_list<value_type> list) noexcept : m_storage{list} {
+        const auto compare = [](const value_type &lhs, const value_type &rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs.first);
+        };
+        std::ranges::sort(m_storage, compare);
+    }
+
+    /// \brief
+    ///   Copy constructor of HTTP query map.
+    /// \param other
+    ///   The HTTP query map to copy from.
+    HttpQueries(const HttpQueries &other) noexcept = default;
+
+    /// \brief
+    ///   Move constructor of HTTP query map.
+    /// \param[inout] other
+    ///   The HTTP query map to move from. The moved HTTP query map will be in a valid but undefined
+    ///   state.
+    HttpQueries(HttpQueries &&other) noexcept = default;
+
+    /// \brief
+    ///   Destroy the HTTP query map.
+    ~HttpQueries() noexcept = default;
+
+    /// \brief
+    ///   Copy assignment operator of HTTP query map.
+    /// \param other
+    ///   The HTTP query map to copy from.
+    /// \return
+    ///   Reference to this HTTP query map.
+    auto operator=(const HttpQueries &other) noexcept -> HttpQueries & = default;
+
+    /// \brief
+    ///   Move assignment operator of HTTP query map.
+    /// \param[inout] other
+    ///   The HTTP query map to move from. The moved HTTP query map will be in a valid but undefined
+    ///   state.
+    /// \return
+    ///   Reference to this HTTP query map.
+    auto operator=(HttpQueries &&other) noexcept -> HttpQueries & = default;
+
+    /// \brief
+    ///   Get iterator to the first element of this container.
+    /// \return
+    ///   Iterator to the first element of this container.
+    [[nodiscard]]
+    auto begin() noexcept -> iterator {
+        return m_storage.begin();
+    }
+
+    /// \brief
+    ///   Get iterator to the first element of this container.
+    /// \return
+    ///   Iterator to the first element of this container.
+    [[nodiscard]]
+    auto begin() const noexcept -> const_iterator {
+        return m_storage.begin();
+    }
+
+    /// \brief
+    ///   Get iterator to the first element of this container.
+    /// \return
+    ///   Iterator to the first element of this container.
+    [[nodiscard]]
+    auto cbegin() const noexcept -> const_iterator {
+        return m_storage.begin();
+    }
+
+    /// \brief
+    ///   Get iterator to the place after the last element of this container.
+    /// \return
+    ///   Iterator to the place after the last element of this container.
+    [[nodiscard]]
+    auto end() noexcept -> iterator {
+        return m_storage.end();
+    }
+
+    /// \brief
+    ///   Get iterator to the place after the last element of this container.
+    /// \return
+    ///   Iterator to the place after the last element of this container.
+    [[nodiscard]]
+    auto end() const noexcept -> const_iterator {
+        return m_storage.end();
+    }
+
+    /// \brief
+    ///   Get iterator to the place after the last element of this container.
+    /// \return
+    ///   Iterator to the place after the last element of this container.
+    [[nodiscard]]
+    auto cend() const noexcept -> const_iterator {
+        return m_storage.end();
+    }
+
+    /// \brief
+    ///   Get reverse iterator to the first element of reversed this container.
+    /// \return
+    ///   Reverse iterator to the first element of reversed this container.
+    [[nodiscard]]
+    auto rbegin() noexcept -> reverse_iterator {
+        return m_storage.rbegin();
+    }
+
+    /// \brief
+    ///   Get reverse iterator to the first element of reversed this container.
+    /// \return
+    ///   Reverse iterator to the first element of reversed this container.
+    [[nodiscard]]
+    auto rbegin() const noexcept -> const_reverse_iterator {
+        return m_storage.rbegin();
+    }
+
+    /// \brief
+    ///   Get reverse iterator to the first element of reversed this container.
+    /// \return
+    ///   Reverse iterator to the first element of reversed this container.
+    [[nodiscard]]
+    auto crbegin() const noexcept -> const_reverse_iterator {
+        return m_storage.rbegin();
+    }
+
+    /// \brief
+    ///   Get reverse iterator to the place after the last element of reversed this container.
+    /// \return
+    ///   Reverse iterator to the place after the last element of reversed this container.
+    [[nodiscard]]
+    auto rend() noexcept -> reverse_iterator {
+        return m_storage.rend();
+    }
+
+    /// \brief
+    ///   Get reverse iterator to the place after the last element of reversed this container.
+    /// \return
+    ///   Reverse iterator to the place after the last element of reversed this container.
+    [[nodiscard]]
+    auto rend() const noexcept -> const_reverse_iterator {
+        return m_storage.rend();
+    }
+
+    /// \brief
+    ///   Get reverse iterator to the place after the last element of reversed this container.
+    /// \return
+    ///   Reverse iterator to the place after the last element of reversed this container.
+    [[nodiscard]]
+    auto crend() const noexcept -> const_reverse_iterator {
+        return m_storage.rend();
+    }
+
+    /// \brief
+    ///   Checks if this container is empty.
+    /// \retval true
+    ///   This container is empty.
+    /// \retval false
+    ///   This container is not empty.
+    [[nodiscard]]
+    auto empty() const noexcept -> bool {
+        return m_storage.empty();
+    }
+
+    /// \brief
+    ///   Get the number of key-value pairs in this container.
+    /// \return
+    ///   Number of key-value pairs in this container.
+    [[nodiscard]]
+    auto size() const noexcept -> size_type {
+        return m_storage.size();
+    }
+
+    /// \brief
+    ///   Add a key-value pair to this container.
+    /// \tparam Args
+    ///   Types of arguments to construct the key-value pair.
+    /// \param args
+    ///   Arguments to construct the key-value pair.
+    /// \return
+    ///   Iterator to the added key-value pair.
+    template <typename... Args>
+        requires(std::is_constructible_v<value_type, Args && ...>)
+    auto emplace(Args &&...args) noexcept(std::is_nothrow_constructible_v<value_type, Args &&...>)
+        -> iterator {
+        const auto compare = [](const value_type &lhs, const value_type &rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs.first);
+        };
+        value_type value{std::forward<Args>(args)...};
+        auto iter = std::ranges::upper_bound(m_storage, value, compare);
+        return m_storage.insert(iter, std::move(value));
+    }
+
+    /// \brief
+    ///   Insert a key-value pair to this container.
+    /// \param value
+    ///   Key-value pair to insert.
+    /// \return
+    ///   Iterator to the inserted key-value pair.
+    auto insert(const value_type &value) noexcept -> iterator {
+        const auto compare = [](const value_type &lhs, const value_type &rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs.first);
+        };
+        auto iter = std::ranges::upper_bound(m_storage, value, compare);
+        return m_storage.insert(iter, value);
+    }
+
+    /// \brief
+    ///   Insert a key-value pair to this container.
+    /// \param value
+    ///   Key-value pair to insert.
+    /// \return
+    ///   Iterator to the inserted key-value pair.
+    auto insert(value_type &&value) noexcept -> iterator {
+        const auto compare = [](const value_type &lhs, const value_type &rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs.first);
+        };
+        auto iter = std::ranges::upper_bound(m_storage, value, compare);
+        return m_storage.insert(iter, std::move(value));
+    }
+
+    /// \brief
+    ///   Erase the element at the given position.
+    /// \param position
+    ///   Iterator to the element to erase.
+    /// \return
+    ///   Iterator to the element after the erased element.
+    auto erase(const_iterator position) noexcept -> iterator {
+        return m_storage.erase(position);
+    }
+
+    /// \brief
+    ///   Erase the elements in the given range.
+    /// \param first
+    ///   Iterator to the first element to erase.
+    /// \param last
+    ///   Iterator to the place after the last element to erase.
+    /// \return
+    ///   Iterator to the element after the last erased element.
+    auto erase(const_iterator first, const_iterator last) noexcept -> iterator {
+        return m_storage.erase(first, last);
+    }
+
+    /// \brief
+    ///   Erase all elements with the given key.
+    /// \param key
+    ///   Key of the elements to erase.
+    /// \return
+    ///   Number of elements erased.
+    auto erase(std::string_view key) noexcept -> size_type {
+        auto range = equal_range(key);
+        auto count = std::distance(range.first, range.second);
+        m_storage.erase(range.first, range.second);
+        return static_cast<size_type>(count);
+    }
+
+    /// \brief
+    ///   Swap the content of this container with another container.
+    /// \param[inout] other
+    ///   The container to swap with.
+    auto swap(HttpQueries &other) noexcept -> void {
+        m_storage.swap(other.m_storage);
+    }
+
+    /// \brief
+    ///   Remove all elements from this container.
+    auto clear() noexcept -> void {
+        m_storage.clear();
+    }
+
+    /// \brief
+    ///   Find the first element with the given key.
+    /// \param key
+    ///   Key of elements to find.
+    /// \return
+    ///   Iterator to the first element with the given key. If the element is not found, return
+    ///   \c end().
+    [[nodiscard]]
+    auto find(std::string_view key) noexcept -> iterator {
+        const auto compare = [](const value_type &lhs, std::string_view rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs);
+        };
+
+        auto iter = std::lower_bound(m_storage.begin(), m_storage.end(), key, compare); // NOLINT
+        if (iter != end())
+            return key_compare{}(key, (*iter).first) ? end() : iter;
+        return end();
+    }
+
+    /// \brief
+    ///   Find the first element with the given key.
+    /// \param key
+    ///   Key of elements to find.
+    /// \return
+    ///   Iterator to the first element with the given key. If the element is not found, return
+    ///   \c end().
+    [[nodiscard]]
+    auto find(std::string_view key) const noexcept -> const_iterator {
+        const auto compare = [](const value_type &lhs, std::string_view rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs);
+        };
+
+        auto iter = std::lower_bound(m_storage.begin(), m_storage.end(), key, compare); // NOLINT
+        if (iter != end())
+            return key_compare{}(key, (*iter).first) ? end() : iter;
+        return end();
+    }
+
+    /// \brief
+    ///   Count the number of elements with the given key.
+    /// \param key
+    ///   Key of elements to count.
+    /// \return
+    ///   Number of elements with the given key.
+    [[nodiscard]]
+    auto count(std::string_view key) const noexcept -> size_type {
+        auto range = equal_range(key);
+        auto count = std::distance(range.first, range.second);
+        return static_cast<size_type>(count);
+    }
+
+    /// \brief
+    ///   Checks if this container contains any element that matches the given key.
+    /// \param key
+    ///   Key to check.
+    /// \retval true
+    ///   This container contains at least one element with the given key.
+    /// \retval false
+    ///   This container does not contain any element with the given key.
+    [[nodiscard]]
+    auto contains(std::string_view key) const noexcept -> bool {
+        return this->find(key) != this->end();
+    }
+
+    /// \brief
+    ///   Get iterator to the first element that is not less than the given key.
+    /// \param key
+    ///   Key to compare.
+    /// \return
+    ///   Iterator to the first element that is not less than the given key. Return \c end() if no
+    ///   such element is found.
+    [[nodiscard]]
+    auto lower_bound(std::string_view key) noexcept -> iterator {
+        const auto compare = [](const value_type &lhs, std::string_view rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs);
+        };
+        return std::lower_bound(m_storage.begin(), m_storage.end(), key, compare); // NOLINT
+    }
+
+    /// \brief
+    ///   Get iterator to the first element that is not less than the given key.
+    /// \param key
+    ///   Key to compare.
+    /// \return
+    ///   Iterator to the first element that is not less than the given key. Return \c end() if no
+    ///   such element is found.
+    [[nodiscard]]
+    auto lower_bound(std::string_view key) const noexcept -> const_iterator {
+        const auto compare = [](const value_type &lhs, std::string_view rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs);
+        };
+        return std::lower_bound(m_storage.begin(), m_storage.end(), key, compare); // NOLINT
+    }
+
+    /// \brief
+    ///   Get iterator to the first element that is greater than the given key.
+    /// \param key
+    ///   Key to compare.
+    /// \return
+    ///   Iterator to the first element that is greater than the given key. Return \c end() if no
+    ///   such element is found.
+    [[nodiscard]]
+    auto upper_bound(std::string_view key) noexcept -> iterator {
+        const auto compare = [](std::string_view lhs, const value_type &rhs) noexcept -> bool {
+            return key_compare{}(lhs, rhs.first);
+        };
+        return std::upper_bound(m_storage.begin(), m_storage.end(), key, compare); // NOLINT
+    }
+
+    /// \brief
+    ///   Get iterator to the first element that is greater than the given key.
+    /// \param key
+    ///   Key to compare.
+    /// \return
+    ///   Iterator to the first element that is greater than the given key. Return \c end() if no
+    ///   such element is found.
+    [[nodiscard]]
+    auto upper_bound(std::string_view key) const noexcept -> const_iterator {
+        const auto compare = [](std::string_view lhs, const value_type &rhs) noexcept -> bool {
+            return key_compare{}(lhs, rhs.first);
+        };
+        return std::upper_bound(m_storage.begin(), m_storage.end(), key, compare); // NOLINT
+    }
+
+    /// \brief
+    ///   Get a range containing all elements with the given key in the container.
+    /// \param key
+    ///   Key to compare.
+    /// \return
+    ///   Pair of iterators that represent the range of elements with the given key.
+    [[nodiscard]]
+    auto equal_range(std::string_view key) noexcept -> std::pair<iterator, iterator> {
+        const auto compare1 = [](const value_type &lhs, std::string_view rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs);
+        };
+
+        const auto compare2 = [](std::string_view lhs, const value_type &rhs) noexcept -> bool {
+            return key_compare{}(lhs, rhs.first);
+        };
+
+        auto first = std::lower_bound(m_storage.begin(), m_storage.end(), key, compare1); // NOLINT
+        auto last  = std::upper_bound(first, m_storage.end(), key, compare2);
+        return {first, last};
+    }
+
+    /// \brief
+    ///   Get a range containing all elements with the given key in the container.
+    /// \param key
+    ///   Key to compare.
+    /// \return
+    ///   Pair of iterators that represent the range of elements with the given key.
+    [[nodiscard]]
+    auto equal_range(std::string_view key) const noexcept
+        -> std::pair<const_iterator, const_iterator> {
+        const auto compare1 = [](const value_type &lhs, std::string_view rhs) noexcept -> bool {
+            return key_compare{}(lhs.first, rhs);
+        };
+
+        const auto compare2 = [](std::string_view lhs, const value_type &rhs) noexcept -> bool {
+            return key_compare{}(lhs, rhs.first);
+        };
+
+        auto first = std::lower_bound(m_storage.begin(), m_storage.end(), key, compare1); // NOLINT
+        auto last  = std::upper_bound(first, m_storage.end(), key, compare2);
+        return {first, last};
+    }
+
+private:
+    container_type m_storage;
 };
 
 /// \class ServiceCollection
