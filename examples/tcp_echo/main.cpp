@@ -85,12 +85,12 @@ static auto server(TcpStream stream) noexcept -> Task<> {
 
     char buffer[65536];
     while (true) {
-        auto result = co_await stream.receiveAsync(buffer, sizeof(buffer));
+        auto result = co_await stream.receive(buffer, sizeof(buffer));
 
         // Handle error.
         if (!result.has_value()) [[unlikely]] {
-            std::println(stderr, "TcpStream::receiveAsync from {} failed: {}",
-                         remoteAddress.toString(), result.error().message());
+            std::println(stderr, "TcpStream::receive from {} failed: {}", remoteAddress.toString(),
+                         result.error().message());
             co_return;
         }
 
@@ -107,12 +107,12 @@ static auto server(TcpStream stream) noexcept -> Task<> {
         // Send received data back.
         std::uint32_t totalSent = 0;
         while (totalSent < received) {
-            result = co_await stream.sendAsync(buffer + totalSent, received - totalSent);
+            result = co_await stream.send(buffer + totalSent, received - totalSent);
 
             // Handle error.
             if (!result.has_value()) [[unlikely]] {
-                std::println(stderr, "TcpStream::sendAsync to {} failed: {}",
-                             remoteAddress.toString(), result.error().message());
+                std::println(stderr, "TcpStream::send to {} failed: {}", remoteAddress.toString(),
+                             result.error().message());
                 co_return;
             }
 

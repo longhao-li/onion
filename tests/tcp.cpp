@@ -20,14 +20,14 @@ TEST_CASE("[TcpListener] TCP ping-pong") {
         while (totalSize < PacketSize * PacketCount) {
             std::uint32_t recvSize = std::min(PacketSize, PacketSize * PacketCount - totalSize);
 
-            auto result = co_await stream.receiveAsync(buffer, recvSize);
+            auto result = co_await stream.receive(buffer, recvSize);
             CHECK(result.has_value());
             totalSize += *result;
 
             recvSize               = *result;
             std::uint32_t sentSize = 0;
             while (sentSize < recvSize) {
-                result = co_await stream.sendAsync(buffer + sentSize, recvSize - sentSize);
+                result = co_await stream.send(buffer + sentSize, recvSize - sentSize);
                 CHECK(result.has_value());
                 sentSize += *result;
             }
@@ -55,7 +55,7 @@ TEST_CASE("[TcpListener] TCP ping-pong") {
         while (!serverReady.load(std::memory_order_acquire))
             co_await yield();
 
-        SystemErrorCode error = co_await stream.connectAsync(address);
+        SystemErrorCode error = co_await stream.connect(address);
         CHECK(error.ok());
         CHECK(stream.remoteAddress() == address);
 
@@ -70,14 +70,14 @@ TEST_CASE("[TcpListener] TCP ping-pong") {
         while (totalSize < PacketSize * PacketCount) {
             std::uint32_t sendSize = std::min(BufferSize, PacketSize * PacketCount - totalSize);
 
-            auto result = co_await stream.sendAsync(buffer, sendSize);
+            auto result = co_await stream.send(buffer, sendSize);
             CHECK(result.has_value());
             totalSize += *result;
 
             sendSize               = *result;
             std::uint32_t recvSize = 0;
             while (recvSize < sendSize) {
-                result = co_await stream.receiveAsync(buffer + recvSize, sendSize - recvSize);
+                result = co_await stream.receive(buffer + recvSize, sendSize - recvSize);
                 CHECK(result.has_value());
                 recvSize += *result;
             }

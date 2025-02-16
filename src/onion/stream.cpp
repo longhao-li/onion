@@ -6,6 +6,29 @@
 
 using namespace onion;
 
+auto StringStream::ReadAwaitable::await_resume() noexcept -> std::uint32_t {
+    m_size = std::min(m_size, static_cast<std::uint32_t>(m_stream->size()));
+    std::memcpy(m_buffer, m_stream->m_begin, m_size);
+    m_stream->m_begin += m_size;
+
+    if (m_stream->m_begin == m_stream->m_end) {
+        m_stream->m_begin = m_stream->m_buffer;
+        m_stream->m_end   = m_stream->m_buffer;
+    }
+
+    return m_size;
+}
+
+auto StringStream::WriteAwaitable::await_resume() noexcept -> std::uint32_t {
+    if (m_stream->m_end + m_size >= m_stream->m_bufferEnd)
+        m_stream->reserve(
+            static_cast<std::size_t>(m_stream->m_bufferEnd - m_stream->m_buffer + m_size));
+
+    std::memcpy(m_stream->m_end, m_data, m_size);
+    m_stream->m_end += m_size;
+    return m_size;
+}
+
 StringStream::StringStream(std::string_view str) noexcept
     : m_buffer{static_cast<char *>(std::malloc(str.size()))},
       m_bufferEnd{m_buffer + str.size()},
@@ -110,26 +133,4 @@ auto StringStream::reserve(std::size_t capacity) noexcept -> void {
     m_bufferEnd = newBuffer + capacity;
     m_begin     = newBuffer;
     m_end       = newBuffer + size;
-}
-
-auto StringStream::read(void *buffer, std::uint32_t size) noexcept -> std::uint32_t {
-    size = std::min(size, static_cast<std::uint32_t>(this->size()));
-    std::memcpy(buffer, m_begin, size);
-    m_begin += size;
-
-    if (m_begin == m_end) {
-        m_begin = m_buffer;
-        m_end   = m_buffer;
-    }
-
-    return size;
-}
-
-auto StringStream::write(const void *data, std::uint32_t size) noexcept -> std::uint32_t {
-    if (m_end + size >= m_bufferEnd)
-        this->reserve(static_cast<std::size_t>(m_bufferEnd - m_buffer + size));
-
-    std::memcpy(m_end, data, size);
-    m_end += size;
-    return size;
 }
