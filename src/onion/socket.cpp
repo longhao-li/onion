@@ -210,6 +210,21 @@ auto TcpStream::setNoDelay(bool enable) noexcept -> std::errc {
     return {};
 }
 
+auto TcpStream::shutdown(ShutdownOption option) noexcept -> std::errc {
+    int opt;
+
+    switch (option) {
+    case ShutdownOption::Read:  opt = SHUT_RD; break;
+    case ShutdownOption::Write: opt = SHUT_WR; break;
+    case ShutdownOption::Both:  opt = SHUT_RDWR; break;
+    default:                    return std::errc::invalid_argument;
+    }
+
+    if (::shutdown(m_socket, opt) == -1) [[unlikely]]
+        return static_cast<std::errc>(errno);
+    return {};
+}
+
 auto TcpStream::close() noexcept -> void {
     if (m_socket != InvalidSocket) {
         ::close(m_socket);

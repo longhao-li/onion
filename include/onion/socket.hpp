@@ -829,6 +829,15 @@ private:
     std::uint32_t m_size;
 };
 
+/// \enum ShutdownOption
+/// \brief
+///   Option for socket shutdown operation.
+enum class ShutdownOption : std::uint8_t {
+    Read  = (1 << 0),
+    Write = (1 << 1),
+    Both  = (Read | Write),
+};
+
 /// \class TcpStream
 /// \brief
 ///   \c TcpStream represents a TCP connection. This class could only be used in workers.
@@ -1016,6 +1025,15 @@ public:
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
     ONION_API auto setNoDelay(bool enable) noexcept -> std::errc;
+
+    /// \brief
+    ///   Shutdown this TCP stream for read, write or both.
+    /// \param option
+    ///   Shutdown option that indicates which part of the TCP connection to shutdown.
+    /// \return
+    ///   A system error code that indicates the result of the operation. The error code is 0 if
+    ///   success.
+    ONION_API auto shutdown(ShutdownOption option) noexcept -> std::errc;
 
     /// \brief
     ///   Set send timeout of this TCP connection.
