@@ -263,20 +263,14 @@ public:
     ///   Pointer to worker for current thread. The return value is \c nullptr if current thread
     ///   is not a worker thread.
     [[nodiscard]]
-    static auto current() noexcept -> IoContextWorker *;
+    ONION_API static auto current() noexcept -> IoContextWorker *;
 
 private:
     /// \brief
     ///   For internal usage. Schedule a task in this worker. This method is not concurrent safe.
     /// \param[in] promise
     ///   Promise of the task to be scheduled.
-    auto schedule(PromiseBase &promise) noexcept -> void {
-        if (!m_taskQueue.tryPush(&promise)) [[unlikely]] {
-            std::lock_guard<std::mutex> lock{m_localTasksMutex};
-            m_localTasks.push_back(&promise);
-            m_hasLocalTask.store(true, std::memory_order_relaxed);
-        }
-    }
+    ONION_API auto schedule(PromiseBase &promise) noexcept -> void;
 
     /// \brief
     ///   Wake up the IO multiplexer of this worker. This method is concurrent safe.
@@ -393,10 +387,7 @@ public:
     /// \brief
     ///   Request all workers in this \c IoContext to stop. This method only sends a stop request to
     ///   all workers and returns immediately. This method is concurrent safe.
-    auto stop() noexcept -> void {
-        for (auto &worker : m_workers)
-            worker.stop();
-    }
+    ONION_API auto stop() noexcept -> void;
 
     /// \brief
     ///   Dispatch tasks into all workers in this \c IoContext. This method is concurrent safe.

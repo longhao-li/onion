@@ -731,6 +731,14 @@ auto IoContextWorker::current() noexcept -> IoContextWorker * {
     return threadWorker;
 }
 
+auto IoContextWorker::schedule(PromiseBase &promise) noexcept -> void {
+    if (!m_taskQueue.tryPush(&promise)) [[unlikely]] {
+        std::lock_guard<std::mutex> lock{m_localTasksMutex};
+        m_localTasks.push_back(&promise);
+        m_hasLocalTask.store(true, std::memory_order_relaxed);
+    }
+}
+
 auto IoContextWorker::wakeUp() noexcept -> void {
     // Post a wake up event to eventfd.
     eventfd_write(m_wakeUp, WakeUpKey);
@@ -766,6 +774,11 @@ auto IoContext::start() noexcept -> void {
         thread.join();
 
     m_isRunning.store(false, std::memory_order_relaxed);
+}
+
+auto IoContext::stop() noexcept -> void {
+    for (auto &worker : m_workers)
+        worker.stop();
 }
 
 auto YieldAwaitable::await_suspend(PromiseBase &promise) noexcept -> void {
