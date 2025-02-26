@@ -117,6 +117,22 @@ public:
     ONION_API IpAddress(std::string_view address);
 
     /// \brief
+    ///   Create an IP address from a C-style string.
+    /// \param address
+    ///   The string representation of the address.
+    /// \throws std::invalid_argument
+    ///   Thrown if \p address is neither a valid IPv4 nor a valid IPv6 address.
+    IpAddress(const char *address) : IpAddress{std::string_view{address}} {}
+
+    /// \brief
+    ///   Create an IP address from a \c std::string.
+    /// \param address
+    ///   The string representation of the address.
+    /// \throws std::invalid_argument
+    ///   Thrown if \p address is neither a valid IPv4 nor a valid IPv6 address.
+    IpAddress(const std::string &address) : IpAddress{std::string_view{address}} {}
+
+    /// \brief
     ///   Checks if this is an IPv4 address. An \c IpAddress object is either an IPv4 or an IPv6
     ///   address.
     /// \retval true

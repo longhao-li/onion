@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <random>
 #include <vector>
 
 namespace onion {
@@ -19,7 +20,7 @@ public:
     /// \param capacity
     ///   Expected maximum number of tasks that could be stored in this queue. This value will
     ///   always be rounded up to the block size.
-    ONION_API explicit IoContextWorkerTaskQueue(std::size_t capacity) noexcept;
+    explicit IoContextWorkerTaskQueue(std::size_t capacity) noexcept;
 
     /// \brief
     ///   \c IoContextWorkerTaskQueue is not copyable.
@@ -51,11 +52,16 @@ public:
     auto operator=(IoContextWorkerTaskQueue &&other) = delete;
 
     /// \brief
-    ///  Get the approximate size in use of the queue.
-    /// \return
-    ///   The approximate size in use of the queue.
+    ///   Checks if we should steal tasks from this task queue by a random number.
+    /// \param random
+    ///   A random number that is used to determine whether we should steal tasks from this task
+    ///   queue.
+    /// \retval true
+    ///   We should steal tasks from this task queue.
+    /// \retval false
+    ///   We should not steal tasks from this task queue.
     [[nodiscard]]
-    ONION_API auto approximateSize() const noexcept -> std::size_t;
+    auto shouldSteal(std::size_t random) const noexcept -> bool;
 
     /// \brief
     ///   Try to push a task into the queue.
@@ -65,7 +71,7 @@ public:
     ///   The task is successfully pushed into the queue.
     /// \retval false
     ///   The queue is full and the task is not pushed into the queue.
-    ONION_API auto tryPush(PromiseBase *value) noexcept -> bool;
+    auto tryPush(PromiseBase *value) noexcept -> bool;
 
     /// \brief
     ///   Try to pop a task from this task queue. This method could only be called in the owner
@@ -73,7 +79,7 @@ public:
     /// \return
     ///   Pointer to the promise of the task popped from the queue. Otherwise, return \c nullptr.
     [[nodiscard]]
-    ONION_API auto tryPop() noexcept -> PromiseBase *;
+    auto tryPop() noexcept -> PromiseBase *;
 
     /// \brief
     ///   Try to steal a task from this task queue. This method could only be called in the thief
@@ -81,7 +87,7 @@ public:
     /// \return
     ///   Pointer to the promise of the task stolen from the queue. Otherwise, return \c nullptr.
     [[nodiscard]]
-    ONION_API auto trySteal() noexcept -> PromiseBase *;
+    auto trySteal() noexcept -> PromiseBase *;
 
 private:
     /// \brief
@@ -157,14 +163,13 @@ struct Overlapped {
 class IoContextWorker {
 public:
     /// \brief
-    ///   Create a new worker for the given IO context and initialize the IO multiplexer. \c IOCP
-    ///   will be used for Windows, \c io_uring will be used for Linux and \c kqueue will be used
-    ///   for BSD.
+    ///   Create a new worker for the given IO context and initialize the IO multiplexer.
+    ///   \c io_uring will be used for Linux.
     /// \param[in] context
     ///   Owner context of this worker.
     /// \throws std::system_error
     ///   Thrown if failed to create IO multiplexer.
-    ONION_API explicit IoContextWorker(IoContext &context);
+    explicit IoContextWorker(IoContext &context);
 
     /// \brief
     ///   \c IoContextWorker is not copyable.
@@ -175,11 +180,11 @@ public:
     ///   objects could be managed in \c std::vector. This constructor should not be used directly.
     /// \param[inout] other
     ///   The worker to move from. The moved worker will be in a valid but undefined state.
-    ONION_API IoContextWorker(IoContextWorker &&other) noexcept;
+    IoContextWorker(IoContextWorker &&other) noexcept;
 
     /// \brief
     ///   Destroy this worker and release resources. This worker must be stopped before destruction.
-    ONION_API ~IoContextWorker() noexcept;
+    ~IoContextWorker() noexcept;
 
     /// \brief
     ///   \c IoContextWorker is not copyable.
@@ -215,12 +220,12 @@ public:
     ///
     ///   It is OK to call this method for multiple-times in different threads at the same time, but
     ///   only one of them will start the worker.
-    ONION_API auto start() noexcept -> void;
+    auto start() noexcept -> void;
 
     /// \brief
     ///   Request this worker to stop. This method only sends a stop request to this worker and
     ///   returns immediately. This method is concurrent safe.
-    ONION_API auto stop() noexcept -> void;
+    auto stop() noexcept -> void;
 
     /// \brief
     ///   Schedule a task in this worker. This method is concurrent safe.
@@ -258,7 +263,7 @@ public:
     ///   Pointer to worker for current thread. The return value is \c nullptr if current thread
     ///   is not a worker thread.
     [[nodiscard]]
-    ONION_API static auto current() noexcept -> IoContextWorker *;
+    static auto current() noexcept -> IoContextWorker *;
 
 private:
     /// \brief
@@ -287,6 +292,18 @@ private:
     /// \brief
     ///   Owner \c IoContext of this worker.
     IoContext *m_context;
+
+    /// \brief
+    ///   Max retry count for stealing tasks.
+    std::size_t m_maxStealRetry;
+
+    /// \brief
+    ///   Random engine that is used to determine which worker to steal tasks from.
+    std::default_random_engine m_randomEngine;
+
+    /// \brief
+    ///   Random distribution that is used to determine which worker to steal tasks from.
+    std::uniform_int_distribution<std::size_t> m_randomDistribution;
 
     /// \brief
     ///   Pointer to \c io_uring for this worker.

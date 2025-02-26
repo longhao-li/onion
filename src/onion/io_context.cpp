@@ -362,12 +362,9 @@ IoContextWorkerTaskQueue::~IoContextWorkerTaskQueue() noexcept {
     }
 }
 
-auto IoContextWorkerTaskQueue::approximateSize() const noexcept -> std::size_t {
-    // Get approximate number of tasks in this queue by number of blocks in use.
-    std::size_t owner = m_ownerIndex.load(std::memory_order_relaxed);
-    std::size_t thief = m_thiefIndex.load(std::memory_order_relaxed);
-    std::size_t diff  = owner - thief;
-    return diff * TaskBlockCapacity;
+auto IoContextWorkerTaskQueue::shouldSteal(std::size_t random) const noexcept -> bool {
+    auto *blocks = static_cast<TaskBlock *>(m_blocks);
+    return blocks[random & m_mask].isStealable();
 }
 
 auto IoContextWorkerTaskQueue::tryPush(PromiseBase *value) noexcept -> bool {
@@ -500,7 +497,10 @@ static thread_local IoContextWorker *threadWorker;
 IoContextWorker::IoContextWorker(IoContext &context)
     : m_isRunning{false},
       m_context{&context},
-      m_uring{static_cast<io_uring *>(std::malloc(sizeof(io_uring)))},
+      m_maxStealRetry{std::max<std::size_t>(context.size() / 4, 1)},
+      m_randomEngine{std::random_device{}()},
+      m_randomDistribution{},
+      m_uring{std::malloc(sizeof(io_uring))},
       m_wakeUp{-1},
       m_taskQueue{16384},
       m_localTasksMutex{},
@@ -544,6 +544,9 @@ IoContextWorker::IoContextWorker(IoContext &context)
 IoContextWorker::IoContextWorker(IoContextWorker &&other) noexcept
     : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
       m_context{other.m_context},
+      m_maxStealRetry{other.m_maxStealRetry},
+      m_randomEngine{std::move(other.m_randomEngine)},
+      m_randomDistribution{other.m_randomDistribution},
       m_uring{other.m_uring},
       m_wakeUp{other.m_wakeUp},
       m_taskQueue{std::move(other.m_taskQueue)},
@@ -572,6 +575,9 @@ auto IoContextWorker::start() noexcept -> void {
     // Set thread worker.
     threadWorker = this;
 
+    // Update random distribution.
+    m_randomDistribution = std::uniform_int_distribution<std::size_t>{0, m_context->size() - 1};
+
     // Stop flag.
     bool shouldStop = false;
 
@@ -597,28 +603,26 @@ auto IoContextWorker::start() noexcept -> void {
 
         // Steal from the worker that has the most tasks.
         IoContextWorker *worker = nullptr;
-        std::size_t maxCount    = 0;
+        for (std::size_t i = 0; i < m_maxStealRetry; ++i) {
+            std::size_t index = m_randomDistribution(m_randomEngine);
+            auto &victim      = workers[index];
 
-        for (auto &w : workers) {
-            if (&w == this)
-                continue;
+            // Do not steal from self.
+            if (&victim == this)
+                return;
 
-            std::size_t count = w.m_taskQueue.approximateSize();
-            if (count > maxCount) {
-                worker   = &w;
-                maxCount = count;
+            if (victim.m_taskQueue.shouldSteal(m_randomEngine())) {
+                worker = &victim;
+                break;
             }
         }
 
         if (worker == nullptr)
             return;
 
-        // Steal at most 32 works at a time.
-        std::size_t count    = 0;
         PromiseBase *promise = worker->m_taskQueue.trySteal();
-        while (count < 32 && promise != nullptr) {
+        while (promise != nullptr) {
             runTask(promise);
-            ++count;
             promise = worker->m_taskQueue.trySteal();
         }
     };
