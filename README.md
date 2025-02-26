@@ -7,13 +7,9 @@
 ### Build Requirement
 
 - CMake >= 3.20
-- For Linux:
-    - Any distribution with kernel version >= 5.12.
-    - GCC >= 12 or clang >= 18
-    - System liburing package. For Debian-based distributions, this is usually the liburing-dev package.
-- For Windows:
-    - Windows Vista, Windows Server 2008 or later version
-    - `onion` supports building with both MSVC and clang on Windows. Visual Studio 2022 is required to build with MSVC, and clang >= 18 is required to build with clang.
+- Any Linux distribution with kernel version >= 5.12.
+- GCC >= 12 or clang >= 18.
+- System liburing package. For Debian-based distributions, this is usually the liburing-dev package.
 
 ### Build Options
 
@@ -21,7 +17,7 @@ Use `-DONION_BUILD_SHARED_LIBS=ON` to build `onion` as shared library. Please no
 
 Use `-DONION_BUILD_TESTS=ON` to build unit tests. Unit tests requires [doctest](https://github.com/doctest/doctest). The build script will automatically fetch [doctest](https://github.com/doctest/doctest) from GitHub if it is not found on the system.
 
-Use `-DONION_BUILD_EXAMPLES=ON` to build examples. Please notice that the examples requires GCC version >= 14 for `std::print` support.
+Use `-DONION_BUILD_EXAMPLES=ON` to build examples.
 
 See [CMakeLists.txt](./CMakeLists.txt) for other build options.
 

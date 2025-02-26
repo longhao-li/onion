@@ -37,13 +37,13 @@ TEST_CASE("[TcpListener] TCP ping-pong") {
     auto listener = [&](InetAddress address) -> Task<> {
         TcpListener srv;
 
-        SystemErrorCode error = srv.listen(address);
-        CHECK(error.ok());
+        std::errc error = srv.listen(address);
+        CHECK(error == std::errc{});
         CHECK(srv.localAddress() == address);
 
         serverReady.store(true, std::memory_order_release);
 
-        auto stream = co_await srv.acceptAsync();
+        auto stream = co_await srv.accept();
         CHECK(stream.has_value());
 
         co_await schedule(server(*std::move(stream)));
@@ -55,14 +55,14 @@ TEST_CASE("[TcpListener] TCP ping-pong") {
         while (!serverReady.load(std::memory_order_acquire))
             co_await yield();
 
-        SystemErrorCode error = co_await stream.connect(address);
-        CHECK(error.ok());
+        std::errc error = co_await stream.connect(address);
+        CHECK(error == std::errc{});
         CHECK(stream.remoteAddress() == address);
 
-        CHECK(stream.setKeepAlive(true).ok());
-        CHECK(stream.setNoDelay(true).ok());
-        CHECK(stream.setSendTimeout(5s).ok());
-        CHECK(stream.setReceiveTimeout(5s).ok());
+        CHECK(stream.setKeepAlive(true) == std::errc{});
+        CHECK(stream.setNoDelay(true) == std::errc{});
+        CHECK(stream.setSendTimeout(5s) == std::errc{});
+        CHECK(stream.setReceiveTimeout(5s) == std::errc{});
 
         char buffer[BufferSize]{};
         std::size_t totalSize = 0;

@@ -4,7 +4,7 @@
 
 #include <atomic>
 #include <mutex>
-#include <queue>
+#include <vector>
 
 namespace onion {
 namespace detail {
@@ -31,9 +31,9 @@ public:
     ///   The \c IoContextWorkerTaskQueue object to be moved. The moved \c IoContextWorkerTaskQueue
     ///   object will be in a valid but undefined state.
     IoContextWorkerTaskQueue(IoContextWorkerTaskQueue &&other) noexcept
-        : m_mask{other.m_mask},
-          m_ownerIndex{other.m_ownerIndex.load(std::memory_order_relaxed)},
+        : m_ownerIndex{other.m_ownerIndex.load(std::memory_order_relaxed)},
           m_thiefIndex{other.m_thiefIndex.load(std::memory_order_relaxed)},
+          m_mask{other.m_mask},
           m_blocks{other.m_blocks} {
         other.m_blocks = nullptr;
     }
@@ -112,9 +112,9 @@ private:
     auto advanceStealIndex(std::size_t current) noexcept -> bool;
 
 private:
+    alignas(64) std::atomic_size_t m_ownerIndex;
+    alignas(64) std::atomic_size_t m_thiefIndex;
     std::size_t m_mask;
-    std::atomic_size_t m_ownerIndex;
-    std::atomic_size_t m_thiefIndex;
     void *m_blocks;
 };
 
@@ -143,27 +143,6 @@ class [[nodiscard]] SleepAwaitable;
 
 namespace detail {
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-/// \struct Overlapped
-/// \brief
-///   Overlapped structure for Windows overlapped IO operations.
-struct Overlapped {
-    std::uintptr_t internal;
-    std::uintptr_t internalHigh;
-    union {
-        struct {
-            std::uint32_t offset;
-            std::uint32_t offsetHigh;
-        } dummyStructName;
-        void *pointer;
-    } dummyUnionName;
-    void *event;
-
-    std::uint32_t error;
-    std::uint32_t bytes;
-    PromiseBase *promise;
-};
-#elif defined(__linux) || defined(__linux__)
 /// \struct Overlapped
 /// \brief
 ///   Overlapped structure for \c io_uring operations.
@@ -171,7 +150,6 @@ struct Overlapped {
     std::int32_t result;
     PromiseBase *promise;
 };
-#endif
 
 /// \class IoContextWorker
 /// \brief
@@ -265,16 +243,6 @@ public:
         wakeUp();
     }
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    /// \brief
-    ///   For internal usage. Get IOCP of this worker.
-    /// \return
-    ///   IOCP handle of this worker.
-    [[nodiscard]]
-    auto ioCompletionPort() const noexcept -> void * {
-        return m_iocp;
-    }
-#elif defined(__linux) || defined(__linux__)
     /// \brief
     ///   For internal usage. Get pointer to struct \c io_uring of this worker.
     /// \return
@@ -283,7 +251,6 @@ public:
     auto uring() const noexcept -> void * {
         return m_uring;
     }
-#endif
 
     /// \brief
     ///   Get worker for current thread.
@@ -312,37 +279,6 @@ private:
 
     friend class ::onion::ScheduleAwaitable;
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    /// \brief
-    ///   For internal usage. For Win32 only. Schedule a task in this worker with timeout. The
-    ///   scheduled task will be executed after the timeout. This method is not concurrent safe and
-    ///   could only be called in owner thread.
-    /// \param[in] promise
-    ///   Pointer to the promise of the task to be scheduled.
-    /// \param timeout
-    ///   Timeout in milliseconds.
-    ONION_API auto schedule(PromiseBase &promise, std::uint32_t timeout) noexcept -> void;
-
-    friend class ::onion::SleepAwaitable;
-#endif
-
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    /// \struct TimeoutEvent
-    /// \brief
-    ///   IOCP does not support timer events. This is used to simulate timer for Windows.
-    struct TimeoutEvent {
-        std::int64_t expire;
-        PromiseBase *promise;
-
-        /// \brief
-        ///   \c TimeoutEvent objects are managed in \c std::priority_queue and earlier expire time
-        ///   should be popped first.
-        auto operator<(const TimeoutEvent &other) const noexcept -> bool {
-            return expire > other.expire;
-        }
-    };
-#endif
-
 private:
     /// \brief
     ///   A flag that indicates whether this worker is running.
@@ -352,19 +288,6 @@ private:
     ///   Owner \c IoContext of this worker.
     IoContext *m_context;
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    /// \brief
-    ///   IO completion port for this worker.
-    void *m_iocp;
-
-    /// \brief
-    ///   Frequency of the performance counter per millisecond.
-    std::int64_t m_frequency;
-
-    /// \brief
-    ///   Timeout event queue for this worker.
-    std::priority_queue<TimeoutEvent> m_timeouts;
-#elif defined(__linux) || defined(__linux__)
     /// \brief
     ///   Pointer to \c io_uring for this worker.
     void *m_uring;
@@ -372,7 +295,6 @@ private:
     /// \brief
     ///   Wake up eventfd for this worker.
     int m_wakeUp;
-#endif
 
     /// \brief
     ///   Task queue for this worker.
@@ -654,24 +576,6 @@ constexpr auto yield() noexcept -> YieldAwaitable {
 ///   Awaitable object for suspending current coroutine for a while.
 class [[nodiscard]] SleepAwaitable {
 public:
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    /// \brief
-    ///   Create a new \c SleepAwaitable object to suspend current coroutine for a while.
-    /// \tparam Rep
-    ///   Representation for \c std::chrono::duration. See C++ reference for more details.
-    /// \tparam Period
-    ///   Period for \c std::chrono::duration. See C++ reference for more details.
-    /// \param duration
-    ///   Time to suspend current coroutine. Passing nevative or zero duration will not suspend
-    ///   current coroutine.
-    template <typename Rep, typename Period>
-    constexpr SleepAwaitable(std::chrono::duration<Rep, Period> duration) noexcept : m_timeout{} {
-        auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(duration);
-        auto count        = milliseconds.count();
-        if (count > 0) [[likely]]
-            m_timeout = static_cast<std::uint32_t>(count);
-    }
-#elif defined(__linux) || defined(__linux__)
     /// \brief
     ///   Create a new \c SleepAwaitable object to suspend current coroutine for a while.
     /// \tparam Rep
@@ -693,7 +597,6 @@ public:
             m_timeout.tv_nsec = count % 1'000'000'000;
         }
     }
-#endif
 
     /// \brief
     ///   C++20 coroutine API method. Always execute \c await_suspend().
@@ -731,11 +634,6 @@ public:
     static constexpr auto await_resume() noexcept -> void {}
 
 private:
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    /// \brief
-    ///   Timeout in milliseconds.
-    std::uint32_t m_timeout;
-#elif defined(__linux) || defined(__linux__)
     /// \brief
     ///   Overlapped structure for \c io_uring operations.
     detail::Overlapped m_ovlp;
@@ -746,7 +644,6 @@ private:
         std::int64_t tv_sec;
         std::int64_t tv_nsec;
     } m_timeout;
-#endif
 };
 
 /// \brief

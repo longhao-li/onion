@@ -1,9 +1,8 @@
 #include "onion/socket.hpp"
 
+#include <cstdio>
 #include <cstdlib>
-#include <format>
-#include <print>
-#include <thread>
+#include <cstring>
 
 using namespace onion;
 
@@ -21,7 +20,7 @@ static auto server(TcpStream stream) noexcept -> Task<>;
 
 auto main(int argc, char **argv) -> int {
     if (argc != 3) {
-        std::println(stderr, "Usage: {} <address> <port>", argv[0]);
+        std::fprintf(stderr, "Usage: %s <address> <port>\n", argv[0]);
         return EXIT_FAILURE;
     }
 
@@ -37,7 +36,7 @@ auto main(int argc, char **argv) -> int {
         // Actually noreturn here.
         ctx.start();
     } catch (std::invalid_argument &e) {
-        std::println(stderr, "Invalid IP address: {}", e.what());
+        std::fprintf(stderr, "Invalid IP address: %s\n", e.what());
         return EXIT_FAILURE;
     }
 
@@ -49,24 +48,27 @@ auto main(int argc, char **argv) -> int {
 /// \param address
 ///   The address to listen for incoming connections.
 static auto acceptor(InetAddress address) noexcept -> Task<> {
-    std::println("Thread {} listening on {}", std::this_thread::get_id(), address.toString());
+    std::string addrstr = address.toString();
+    std::printf("Thread %d listening on %s\n", gettid(), addrstr.c_str());
 
     // Bind server to the address.
     TcpListener listener;
     auto error = listener.listen(address);
-    if (!error.ok()) [[unlikely]] {
-        std::println(stderr, "TcpListener::listen on address {} failed: {}", address.toString(),
-                     error.message());
+    if (error != std::errc{}) [[unlikely]] {
+        addrstr = address.toString();
+        std::fprintf(stderr, "TcpListener::listen on address %s failed: %s\n", addrstr.c_str(),
+                     std::strerror(static_cast<int>(error)));
         std::terminate();
     }
 
     // Listen for incoming connections.
     while (true) {
-        auto result = co_await listener.acceptAsync();
+        auto result = co_await listener.accept();
 
         // Handle error.
         if (!result.has_value()) [[unlikely]] {
-            std::println(stderr, "TcpListener::acceptAsync failed: {}", result.error().message());
+            std::fprintf(stderr, "TcpListener::acceptAsync failed: %s\n",
+                         std::strerror(static_cast<int>(result.error())));
             std::terminate();
         }
 
@@ -81,7 +83,8 @@ static auto acceptor(InetAddress address) noexcept -> Task<> {
 ///   Stream of the incoming connection.
 static auto server(TcpStream stream) noexcept -> Task<> {
     InetAddress remoteAddress = stream.remoteAddress();
-    std::println("Connection with {} established.", remoteAddress.toString());
+    std::string addrstr       = remoteAddress.toString();
+    std::printf("Connection with %s established.\n", addrstr.c_str());
 
     char buffer[65536];
     while (true) {
@@ -89,20 +92,20 @@ static auto server(TcpStream stream) noexcept -> Task<> {
 
         // Handle error.
         if (!result.has_value()) [[unlikely]] {
-            std::println(stderr, "TcpStream::receive from {} failed: {}", remoteAddress.toString(),
-                         result.error().message());
+            std::fprintf(stderr, "TcpStream::receive from %s failed: %s\n", addrstr.c_str(),
+                         std::strerror(static_cast<int>(result.error())));
             co_return;
         }
 
         // Connection closed.
         std::uint32_t received = *result;
         if (received == 0) [[unlikely]] {
-            std::println("Connection with {} closed.", remoteAddress.toString());
+            std::printf("Connection with %s closed.\n", addrstr.c_str());
             co_return;
         }
 
         // Write a log.
-        std::println("Received {} bytes from {}.", received, remoteAddress.toString());
+        std::printf("Received %u bytes from %s.\n", received, addrstr.c_str());
 
         // Send received data back.
         std::uint32_t totalSent = 0;
@@ -111,8 +114,8 @@ static auto server(TcpStream stream) noexcept -> Task<> {
 
             // Handle error.
             if (!result.has_value()) [[unlikely]] {
-                std::println(stderr, "TcpStream::send to {} failed: {}", remoteAddress.toString(),
-                             result.error().message());
+                std::fprintf(stderr, "TcpStream::send to %s failed: %s", addrstr.c_str(),
+                             std::strerror(static_cast<int>(result.error())));
                 co_return;
             }
 

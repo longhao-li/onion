@@ -1,6 +1,5 @@
 #pragma once
 
-#include "error_code.hpp"
 #include "io_context.hpp"
 
 #include <bit>
@@ -9,25 +8,9 @@
 namespace onion {
 namespace detail {
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-/// \brief
-///   Windows socket handle type.
-using socket_t = std::uintptr_t;
-#else
-/// \brief
-///   Unix socket handle type.
-using socket_t = int;
-#endif
-
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-/// \brief
-///   Invalid socket handle value. This is the same as \c INVALID_SOCKET in WinSock.
-inline constexpr socket_t InvalidSocket = static_cast<socket_t>(~0);
-#else
 /// \brief
 ///   Invalid socket handle value.
-inline constexpr socket_t InvalidSocket = -1;
-#endif
+inline constexpr int InvalidSocket = -1;
 
 } // namespace detail
 
@@ -65,17 +48,10 @@ constexpr auto toHostEndian(T value) noexcept -> T {
 /// \brief
 ///   Socket address family. The enum values are the same as system \c AF_* values.
 enum class SocketAddressFamily : std::uint16_t {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    Unspecified = 0,
-    Unix        = 1,
-    Internet    = 2,
-    InternetV6  = 23,
-#elif defined(__linux) || defined(__linux__)
     Unspecified = 0,
     Unix        = 1,
     Internet    = 2,
     InternetV6  = 10,
-#endif
 };
 
 /// \class IpAddress
@@ -704,7 +680,7 @@ public:
     ///   Pointer to start of data to send.
     /// \param size
     ///   Size in byte of data to send.
-    SendAwaitable(detail::socket_t socket, const void *data, std::uint32_t size) noexcept
+    SendAwaitable(int socket, const void *data, std::uint32_t size) noexcept
         : m_ovlp{},
           m_socket{socket},
           m_data{data},
@@ -751,21 +727,15 @@ public:
     ///   Number of bytes sent if succeeded. Otherwise, return a system error code that represents
     ///   the IO error.
     [[nodiscard]]
-    auto await_resume() const noexcept -> std::expected<std::uint32_t, SystemErrorCode> {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-        if (m_ovlp.error == 0) [[likely]]
-            return m_ovlp.bytes;
-        return std::unexpected<SystemErrorCode>{m_ovlp.error};
-#elif defined(__linux) || defined(__linux__)
+    auto await_resume() const noexcept -> std::expected<std::uint32_t, std::errc> {
         if (m_ovlp.result >= 0) [[likely]]
             return static_cast<std::uint32_t>(m_ovlp.result);
-        return std::unexpected<SystemErrorCode>{-m_ovlp.result};
-#endif
+        return std::unexpected{static_cast<std::errc>(-m_ovlp.result)};
     }
 
 private:
     detail::Overlapped m_ovlp;
-    detail::socket_t m_socket;
+    int m_socket;
     const void *m_data;
     std::uint32_t m_size;
 };
@@ -783,7 +753,7 @@ public:
     ///   Pointer to start of data buffer.
     /// \param size
     ///   Size in byte of data buffer.
-    ReceiveAwaitable(detail::socket_t socket, void *buffer, std::uint32_t size) noexcept
+    ReceiveAwaitable(int socket, void *buffer, std::uint32_t size) noexcept
         : m_ovlp{},
           m_socket{socket},
           m_buffer{buffer},
@@ -830,21 +800,15 @@ public:
     ///   Number of bytes received if succeeded. Otherwise, return a system error code that
     ///   represents the IO error.
     [[nodiscard]]
-    auto await_resume() const noexcept -> std::expected<std::uint32_t, SystemErrorCode> {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-        if (m_ovlp.error == 0) [[likely]]
-            return m_ovlp.bytes;
-        return std::unexpected<SystemErrorCode>{m_ovlp.error};
-#elif defined(__linux) || defined(__linux__)
+    auto await_resume() const noexcept -> std::expected<std::uint32_t, std::errc> {
         if (m_ovlp.result >= 0) [[likely]]
             return static_cast<std::uint32_t>(m_ovlp.result);
-        return std::unexpected<SystemErrorCode>{-m_ovlp.result};
-#endif
+        return std::unexpected{static_cast<std::errc>(-m_ovlp.result)};
     }
 
 private:
     detail::Overlapped m_ovlp;
-    detail::socket_t m_socket;
+    int m_socket;
     void *m_buffer;
     std::uint32_t m_size;
 };
@@ -913,11 +877,11 @@ public:
         /// \return
         ///   Error code of the asynchronous connect operation. The error code is 0 if success.
         [[nodiscard]]
-        ONION_API auto await_resume() const noexcept -> SystemErrorCode;
+        ONION_API auto await_resume() const noexcept -> std::errc;
 
     private:
         detail::Overlapped m_ovlp;
-        detail::socket_t m_socket;
+        int m_socket;
         const InetAddress *m_address;
         TcpStream *m_stream;
     };
@@ -934,7 +898,7 @@ public:
     ///   Raw TCP socket handle of the TCP connection.
     /// \param address
     ///   Peer address of the TCP connection.
-    TcpStream(detail::socket_t socket, const InetAddress &address) noexcept
+    TcpStream(int socket, const InetAddress &address) noexcept
         : m_socket{socket},
           m_address{address} {}
 
@@ -1006,23 +970,6 @@ public:
     }
 
     /// \brief
-    ///   Send data to the peer TCP endpoint asynchronously. This method will suspend this coroutine
-    ///   until the data is sent or any error occurs.
-    ///
-    ///   This method is just an alias of \c send() so that \c TcpStream object could be used as a
-    ///   stream type.
-    /// \param data
-    ///   Pointer to start of data to send.
-    /// \param size
-    ///   Size in byte of data to send.
-    /// \return
-    ///   Number of bytes sent if succeeded. Otherwise, return a system error code that represents
-    ///   the IO error.
-    auto write(const void *data, std::uint32_t size) noexcept -> SendAwaitable {
-        return this->send(data, size);
-    }
-
-    /// \brief
     ///   Receive data from the peer TCP endpoint asynchronously. This method will suspend this
     ///   coroutine until the data is received or any error occurs.
     /// \param[out] buffer
@@ -1037,30 +984,13 @@ public:
     }
 
     /// \brief
-    ///   Receive data from the peer TCP endpoint asynchronously. This method will suspend this
-    ///   coroutine until the data is received or any error occurs.
-    ///
-    ///   This method is just an alias of \c receive() so that \c TcpStream object could be used as
-    ///   a stream type.
-    /// \param[out] buffer
-    ///   Pointer to start of buffer to receive data.
-    /// \param size
-    ///   Size in byte of buffer to store the received data.
-    /// \return
-    ///   Number of bytes received if succeeded. Otherwise, return a system error code that
-    ///   represents the IO error.
-    auto read(void *buffer, std::uint32_t size) noexcept -> ReceiveAwaitable {
-        return this->receive(buffer, size);
-    }
-
-    /// \brief
     ///   Enable or disable keep-alive mechanism of this TCP connection.
     /// \param enable
     ///   \c true to enable keep-alive mechanism. \c false to disable keep-alive mechanism.
     /// \return
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
-    ONION_API auto setKeepAlive(bool enable) noexcept -> SystemErrorCode;
+    ONION_API auto setKeepAlive(bool enable) noexcept -> std::errc;
 
     /// \brief
     ///   Enable or disable TCP no-delay mechanism of this TCP connection.
@@ -1069,7 +999,7 @@ public:
     /// \return
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
-    ONION_API auto setNoDelay(bool enable) noexcept -> SystemErrorCode;
+    ONION_API auto setNoDelay(bool enable) noexcept -> std::errc;
 
     /// \brief
     ///   Set send timeout of this TCP connection.
@@ -1083,7 +1013,7 @@ public:
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
     template <typename Rep, typename Period>
-    auto setSendTimeout(std::chrono::duration<Rep, Period> timeout) noexcept -> SystemErrorCode {
+    auto setSendTimeout(std::chrono::duration<Rep, Period> timeout) noexcept -> std::errc {
         auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
         milliseconds      = milliseconds < 0 ? 0 : milliseconds;
         return this->setSendTimeout(static_cast<std::uint32_t>(milliseconds));
@@ -1101,7 +1031,7 @@ public:
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
     template <typename Rep, typename Period>
-    auto setReceiveTimeout(std::chrono::duration<Rep, Period> timeout) noexcept -> SystemErrorCode {
+    auto setReceiveTimeout(std::chrono::duration<Rep, Period> timeout) noexcept -> std::errc {
         auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
         milliseconds      = milliseconds < 0 ? 0 : milliseconds;
         return this->setReceiveTimeout(static_cast<std::uint32_t>(milliseconds));
@@ -1121,7 +1051,7 @@ private:
     /// \return
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
-    ONION_API auto setSendTimeout(std::uint32_t timeout) noexcept -> SystemErrorCode;
+    ONION_API auto setSendTimeout(std::uint32_t timeout) noexcept -> std::errc;
 
     /// \brief
     ///   Set receive timeout of this TCP connection.
@@ -1130,10 +1060,10 @@ private:
     /// \return
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
-    ONION_API auto setReceiveTimeout(std::uint32_t timeout) noexcept -> SystemErrorCode;
+    ONION_API auto setReceiveTimeout(std::uint32_t timeout) noexcept -> std::errc;
 
 private:
-    detail::socket_t m_socket;
+    int m_socket;
     InetAddress m_address;
 };
 
@@ -1147,28 +1077,15 @@ public:
     ///   Awaitable object for asynchronous connection acceptance.
     class [[nodiscard]] AcceptAwaitable {
     public:
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
         /// \brief
         ///   Create a new \c AcceptAwaitable object for asynchronous connection acceptance.
         /// \param listener
         ///   The TCP listener socket to accept new connection.
-        explicit AcceptAwaitable(detail::socket_t listener) noexcept
-            : m_ovlp{},
-              m_server{listener},
-              m_connection{detail::InvalidSocket},
-              m_address{},
-              m_padding{} {}
-#elif defined(__linux) || defined(__linux__)
-        /// \brief
-        ///   Create a new \c AcceptAwaitable object for asynchronous connection acceptance.
-        /// \param listener
-        ///   The TCP listener socket to accept new connection.
-        explicit AcceptAwaitable(detail::socket_t listener) noexcept
+        explicit AcceptAwaitable(int listener) noexcept
             : m_ovlp{},
               m_server{listener},
               m_addrlen{},
               m_address{} {}
-#endif
 
         /// \brief
         ///   C++20 coroutine API method. Always execute \c await_suspend().
@@ -1213,23 +1130,13 @@ public:
         ///   A \c TcpStream object that represents the new accepted TCP connection. Otherwise,
         ///   return a system error code that represents the IO error.
         [[nodiscard]]
-        ONION_API auto await_resume() const noexcept -> std::expected<TcpStream, SystemErrorCode>;
+        ONION_API auto await_resume() const noexcept -> std::expected<TcpStream, std::errc>;
 
     private:
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
         detail::Overlapped m_ovlp;
-        detail::socket_t m_server;
-        detail::socket_t m_connection;
-        InetAddress m_address;
-
-        [[maybe_unused]]
-        std::byte m_padding[16];
-#elif defined(__linux) || defined(__linux__)
-        detail::Overlapped m_ovlp;
-        detail::socket_t m_server;
+        int m_server;
         unsigned int m_addrlen;
         InetAddress m_address;
-#endif
     };
 
 public:
@@ -1286,16 +1193,7 @@ public:
     /// \return
     ///   A system error code object that represents system error. The error code is 0 if this
     ///   operation is succeeded.
-    ONION_API auto listen(const InetAddress &address) noexcept -> SystemErrorCode;
-
-    /// \brief
-    ///   Accept a new incoming TCP connection. This method will block current thread until a new
-    ///   incoming connection is established or any error occurs.
-    /// \return
-    ///   A \c TcpStream object that represents the new accepted TCP connection. Otherwise, return a
-    ///   system error code that represents the IO error.
-    [[nodiscard]]
-    ONION_API auto accept() const noexcept -> std::expected<TcpStream, SystemErrorCode>;
+    ONION_API auto listen(const InetAddress &address) noexcept -> std::errc;
 
     /// \brief
     ///   Accept a new incoming TCP connection asynchronously. This method will suspend this
@@ -1304,7 +1202,7 @@ public:
     ///   A \c TcpStream object that represents the new accepted TCP connection.
     /// \throws std::system_error
     ///   Thrown if failed to accept new connection.
-    auto acceptAsync() const noexcept -> AcceptAwaitable {
+    auto accept() const noexcept -> AcceptAwaitable {
         return AcceptAwaitable{m_socket};
     }
 
@@ -1315,7 +1213,7 @@ public:
     ONION_API auto close() noexcept -> void;
 
 private:
-    detail::socket_t m_socket;
+    int m_socket;
     InetAddress m_address;
 };
 

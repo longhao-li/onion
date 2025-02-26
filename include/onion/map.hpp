@@ -9,6 +9,7 @@
 #include <bit>
 #include <cstring>
 #include <stdexcept>
+#include <tuple>
 
 namespace onion::detail {
 namespace hash {
@@ -856,7 +857,7 @@ public:
     ///   Size in bytes required to allocate a hash container for the given slot size and slot
     ///   alignment.
     [[nodiscard]]
-    constexpr auto allocateSize(std::size_t slotSize, std::size_t slotAlignment) const noexcept
+    auto allocateSize(std::size_t slotSize, std::size_t slotAlignment) const noexcept
         -> std::size_t {
         return Layout{capacity(), slotAlignment}.allocateSize(slotSize);
     }

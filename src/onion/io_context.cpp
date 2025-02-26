@@ -1,19 +1,9 @@
 #include "onion/io_context.hpp"
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-#    ifndef WIN32_LEAN_AND_MEAN
-#        define WIN32_LEAN_AND_MEAN
-#    endif
-#    ifndef NOMINMAX
-#        define NOMINMAX
-#    endif
-#    include <WinSock2.h>
-#    include <Windows.h>
-#elif defined(__linux) || defined(__linux__)
-#    include <liburing.h>
-#    include <sys/eventfd.h>
-#    include <sys/utsname.h>
-#endif
+#include <liburing.h>
+
+#include <sys/eventfd.h>
+#include <sys/utsname.h>
 
 #include <array>
 #include <cstdlib>
@@ -24,20 +14,13 @@ using namespace onion;
 using namespace onion::detail;
 
 #if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
-#    if defined(__clang__) || defined(__GNUC__)
-#        define spinPause() __builtin_ia32_pause()
-#    elif defined(_MSC_VER)
-#        define spinPause() _mm_pause()
-#    else
-#        define spinPause() __asm__ volatile("pause" ::: "memory")
-#    endif
+#    define spinPause() __asm__ volatile("pause")
 #elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
-#    define spinPause() __asm__ volatile("yield" ::: "memory")
+#    define spinPause() __asm__ volatile("yield")
 #else
 #    define spinPause() std::this_thread::yield()
 #endif
 
-#if defined(__linux) || defined(__linux__)
 /// \brief
 ///   Create an unsigned int that represents a version number.
 /// \param major
@@ -140,13 +123,12 @@ static auto ioUringSetupFeatures() noexcept -> std::uint32_t {
 
     return features;
 }
-#endif
 
 namespace {
 
 /// \brief
 ///   Maximum number of tasks in a \c TaskBlock.
-inline constexpr std::size_t TaskBlockCapacity = 64;
+inline constexpr std::size_t TaskBlockCapacity = 128;
 
 /// \class TaskBlock
 /// \brief
@@ -167,7 +149,7 @@ public:
 public:
     /// \brief
     ///   Initialize this task block.
-    TaskBlock() noexcept : m_head{}, m_tail{}, m_stealHead{}, m_stealTail{}, m_tasks{} {
+    TaskBlock() noexcept : m_head{}, m_tail{}, m_stealCount{}, m_stealTail{}, m_tasks{} {
         m_stealTail.store(m_tasks.size(), std::memory_order_relaxed);
     }
 
@@ -290,7 +272,7 @@ public:
             return {Status::Conflict, nullptr};
 
         PromiseBase *value = m_tasks[pos];
-        m_stealHead.fetch_add(1, std::memory_order_release);
+        m_stealCount.fetch_add(1, std::memory_order_release);
 
         return {Status::Success, value};
     }
@@ -301,7 +283,7 @@ public:
     /// \return
     ///   A pair of indices that indicates the range of tasks that are taken over.
     [[nodiscard]]
-    auto takeOver() noexcept -> std::pair<std::size_t, std::size_t> {
+    auto takeover() noexcept -> std::pair<std::size_t, std::size_t> {
         // Marks that there is nothing to steal. Take over the rest of the block.
         std::size_t pos = m_stealTail.exchange(m_tasks.size(), std::memory_order_relaxed);
 
@@ -325,12 +307,12 @@ public:
     ///   Wait for everything in this block to be stolen and then reset this block.
     auto reclaim() noexcept -> void {
         std::size_t stealEnd = m_tail.load(std::memory_order_relaxed);
-        while (m_stealHead.load(std::memory_order_acquire) != stealEnd)
+        while (m_stealCount.load(std::memory_order_acquire) != stealEnd)
             spinPause();
 
         m_head.store(0, std::memory_order_relaxed);
         m_tail.store(0, std::memory_order_relaxed);
-        m_stealHead.store(0, std::memory_order_relaxed);
+        m_stealCount.store(0, std::memory_order_relaxed);
         m_stealTail.store(m_tasks.size(), std::memory_order_relaxed);
     }
 
@@ -343,19 +325,19 @@ public:
     }
 
 private:
-    std::atomic_size_t m_head;
-    std::atomic_size_t m_tail;
-    std::atomic_size_t m_stealHead;
-    std::atomic_size_t m_stealTail;
-    std::array<PromiseBase *, TaskBlockCapacity> m_tasks;
+    alignas(64) std::atomic_size_t m_head;
+    alignas(64) std::atomic_size_t m_tail;
+    alignas(64) std::atomic_size_t m_stealCount;
+    alignas(64) std::atomic_size_t m_stealTail;
+    alignas(64) std::array<PromiseBase *, TaskBlockCapacity> m_tasks;
 };
 
 } // namespace
 
 IoContextWorkerTaskQueue::IoContextWorkerTaskQueue(std::size_t capacity) noexcept
-    : m_mask{},
-      m_ownerIndex{1},
+    : m_ownerIndex{1},
       m_thiefIndex{0},
+      m_mask{},
       m_blocks{nullptr} {
     // Round up with block size.
     capacity = (capacity + TaskBlockCapacity - 1) & ~(TaskBlockCapacity - 1);
@@ -472,7 +454,7 @@ auto IoContextWorkerTaskQueue::advancePopIndex() noexcept -> bool {
     std::size_t prev  = owner - 1;
 
     TaskBlock &prevBlock = blocks[prev & m_mask];
-    auto result          = prevBlock.takeOver();
+    auto result          = prevBlock.takeover();
 
     if (result.first != result.second) {
         std::size_t thief = m_thiefIndex.load(std::memory_order_relaxed);
@@ -503,15 +485,6 @@ auto IoContextWorkerTaskQueue::advanceStealIndex(std::size_t current) noexcept -
     return m_thiefIndex.load(std::memory_order_relaxed) != current;
 }
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-/// \brief
-///   Wake up key for IOCP.
-inline constexpr ULONG_PTR WakeUpKey = 0;
-
-/// \brief
-///   Stop key for IOCP.
-inline constexpr ULONG_PTR StopKey = std::numeric_limits<ULONG_PTR>::max();
-#elif defined(__linux) || defined(__linux__)
 /// \brief
 ///   Wake up key for \c eventfd in \c io_uring.
 inline constexpr eventfd_t WakeUpKey = 1;
@@ -519,36 +492,15 @@ inline constexpr eventfd_t WakeUpKey = 1;
 /// \brief
 ///   Stop key for \c eventfd in \c io_uring.
 inline constexpr eventfd_t StopKey = 0x8000000000000000ULL;
-#endif
 
 /// \brief
 ///   Worker for each thread.
 static thread_local IoContextWorker *threadWorker;
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
 IoContextWorker::IoContextWorker(IoContext &context)
     : m_isRunning{false},
       m_context{&context},
-      m_iocp{CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 1)},
-      m_frequency{},
-      m_timeouts{},
-      m_taskQueue{16384},
-      m_localTasksMutex{},
-      m_localTasks{} {
-    if (m_iocp == nullptr) [[unlikely]]
-        throw std::system_error{static_cast<int>(GetLastError()), std::system_category(),
-                                "Failed to create IOCP"};
-
-    // Get frequency of the performance counter per millisecond.
-    LARGE_INTEGER freq;
-    QueryPerformanceFrequency(&freq);
-    m_frequency = freq.QuadPart / 1000;
-}
-#elif defined(__linux) || defined(__linux__)
-IoContextWorker::IoContextWorker(IoContext &context)
-    : m_isRunning{false},
-      m_context{&context},
-      m_uring{std::malloc(sizeof(io_uring))},
+      m_uring{static_cast<io_uring *>(std::malloc(sizeof(io_uring)))},
       m_wakeUp{-1},
       m_taskQueue{16384},
       m_localTasksMutex{},
@@ -588,21 +540,7 @@ IoContextWorker::IoContextWorker(IoContext &context)
         throw std::system_error{error, std::system_category(), "Failed to create eventfd"};
     }
 }
-#endif
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-IoContextWorker::IoContextWorker(IoContextWorker &&other) noexcept
-    : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
-      m_context{other.m_context},
-      m_iocp{other.m_iocp},
-      m_frequency{other.m_frequency},
-      m_timeouts{std::move(other.m_timeouts)},
-      m_taskQueue{std::move(other.m_taskQueue)},
-      m_localTasksMutex{},
-      m_localTasks{} {
-    other.m_iocp = nullptr;
-}
-#elif defined(__linux) || defined(__linux__)
 IoContextWorker::IoContextWorker(IoContextWorker &&other) noexcept
     : m_isRunning{other.m_isRunning.load(std::memory_order_relaxed)},
       m_context{other.m_context},
@@ -615,13 +553,8 @@ IoContextWorker::IoContextWorker(IoContextWorker &&other) noexcept
     other.m_uring  = nullptr;
     other.m_wakeUp = -1;
 }
-#endif
 
 IoContextWorker::~IoContextWorker() noexcept {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    if (m_iocp != nullptr)
-        CloseHandle(m_iocp);
-#elif defined(__linux) || defined(__linux__)
     if (m_uring != nullptr) {
         auto *ring = static_cast<io_uring *>(m_uring);
         io_uring_queue_exit(ring);
@@ -629,7 +562,6 @@ IoContextWorker::~IoContextWorker() noexcept {
 
         ::close(m_wakeUp);
     }
-#endif
 }
 
 auto IoContextWorker::start() noexcept -> void {
@@ -723,67 +655,6 @@ auto IoContextWorker::start() noexcept -> void {
             stealTasks();
     };
 
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    DWORD bytes;
-    ULONG_PTR key;
-    LPOVERLAPPED ovlp;
-    DWORD error;
-    DWORD timeout;
-    BOOL result;
-    LARGE_INTEGER now;
-
-    // Handle tasks once before entering the event loop.
-    handleTasks();
-
-    while (!shouldStop) [[likely]] {
-        // Wait for at most 1 second.
-        timeout = 1000;
-
-        // Check for timeout events.
-        if (!m_timeouts.empty()) {
-            QueryPerformanceCounter(&now);
-            std::int64_t diff = m_timeouts.top().expire - now.QuadPart;
-            if (diff <= 0)
-                diff = 0;
-            else
-                diff /= m_frequency;
-
-            timeout = std::min(static_cast<DWORD>(diff), timeout);
-        }
-
-        result = GetQueuedCompletionStatus(m_iocp, &bytes, &key, &ovlp, timeout);
-        while (true) {
-            error = 0;
-            if (result == FALSE) {
-                error = GetLastError();
-                if (error == WAIT_TIMEOUT)
-                    break;
-            }
-
-            if (ovlp != nullptr) {
-                auto *o = reinterpret_cast<Overlapped *>(ovlp);
-
-                o->error = error;
-                o->bytes = bytes;
-
-                schedule(*o->promise);
-            } else if (key == StopKey) [[unlikely]] {
-                shouldStop = true;
-            }
-
-            result = GetQueuedCompletionStatus(m_iocp, &bytes, &key, &ovlp, 0);
-        }
-
-        // Handle timeout events.
-        QueryPerformanceCounter(&now);
-        while (!m_timeouts.empty() && m_timeouts.top().expire <= now.QuadPart) {
-            schedule(*m_timeouts.top().promise);
-            m_timeouts.pop();
-        }
-
-        handleTasks();
-    }
-#elif defined(__linux) || defined(__linux__)
     auto *const ring  = static_cast<io_uring *>(m_uring);
     io_uring_cqe *cqe = nullptr;
 
@@ -839,7 +710,6 @@ auto IoContextWorker::start() noexcept -> void {
         // Handle tasks.
         handleTasks();
     }
-#endif
 
     // Unset thread worker.
     threadWorker = nullptr;
@@ -849,13 +719,8 @@ auto IoContextWorker::start() noexcept -> void {
 }
 
 auto IoContextWorker::stop() noexcept -> void {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    // Post a stop event to IOCP.
-    PostQueuedCompletionStatus(m_iocp, 0, StopKey, nullptr);
-#elif defined(__linux) || defined(__linux__)
     // Post a stop event to eventfd.
     eventfd_write(m_wakeUp, StopKey);
-#endif
 }
 
 auto IoContextWorker::current() noexcept -> IoContextWorker * {
@@ -863,50 +728,17 @@ auto IoContextWorker::current() noexcept -> IoContextWorker * {
 }
 
 auto IoContextWorker::wakeUp() noexcept -> void {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    // Post a wake up event to IOCP.
-    PostQueuedCompletionStatus(m_iocp, 0, WakeUpKey, nullptr);
-#elif defined(__linux) || defined(__linux__)
     // Post a wake up event to eventfd.
     eventfd_write(m_wakeUp, WakeUpKey);
-#endif
 }
-
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-auto IoContextWorker::schedule(PromiseBase &promise, std::uint32_t timeout) noexcept -> void {
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-
-    m_timeouts.push({
-        .expire  = now.QuadPart + timeout * m_frequency,
-        .promise = &promise,
-    });
-}
-#endif
 
 IoContext::IoContext() : m_isRunning{false}, m_next{0}, m_workers{} {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    // Start up Windows socket library.
-    WSADATA data;
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) [[unlikely]]
-        throw std::system_error(WSAGetLastError(), std::system_category(),
-                                "Failed to start WinSock");
-#endif
-
     std::size_t count = std::max(std::thread::hardware_concurrency(), std::uint32_t{1});
     for (std::size_t i = 0; i < count; ++i)
         m_workers.emplace_back(*this);
 }
 
 IoContext::IoContext(std::size_t count) : m_isRunning{false}, m_next{0}, m_workers{} {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    // Start up Windows socket library.
-    WSADATA data;
-    if (WSAStartup(MAKEWORD(2, 2), &data) != 0) [[unlikely]]
-        throw std::system_error(WSAGetLastError(), std::system_category(),
-                                "Failed to start WinSock");
-#endif
-
     if (count == 0)
         count = std::max(std::thread::hardware_concurrency(), std::uint32_t{1});
 
@@ -914,11 +746,7 @@ IoContext::IoContext(std::size_t count) : m_isRunning{false}, m_next{0}, m_worke
         m_workers.emplace_back(*this);
 }
 
-IoContext::~IoContext() noexcept {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    WSACleanup();
-#endif
-}
+IoContext::~IoContext() noexcept = default;
 
 auto IoContext::start() noexcept -> void {
     if (m_isRunning.exchange(true, std::memory_order_relaxed)) [[unlikely]]
@@ -937,12 +765,6 @@ auto IoContext::start() noexcept -> void {
 }
 
 auto YieldAwaitable::await_suspend(PromiseBase &promise) noexcept -> void {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    m_ovlp.promise = &promise;
-
-    HANDLE iocp = IoContextWorker::current()->ioCompletionPort();
-    PostQueuedCompletionStatus(iocp, 0, 0, reinterpret_cast<LPOVERLAPPED>(&m_ovlp));
-#elif defined(__linux) || defined(__linux__)
     m_ovlp.promise = &promise;
 
     // FIXME: Possible infinite loop.
@@ -958,17 +780,9 @@ auto YieldAwaitable::await_suspend(PromiseBase &promise) noexcept -> void {
     io_uring_sqe_set_data(sqe, &m_ovlp);
 
     io_uring_submit(ring);
-#endif
 }
 
 auto SleepAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
-#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
-    if (m_timeout == 0)
-        return false;
-
-    IoContextWorker::current()->schedule(promise, m_timeout);
-    return true;
-#elif defined(__linux) || defined(__linux__)
     m_ovlp.promise = &promise;
 
     // No need to sleep.
@@ -993,5 +807,4 @@ auto SleepAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
 
     io_uring_submit(ring);
     return true;
-#endif
 }

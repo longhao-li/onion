@@ -23,12 +23,7 @@ if(ONION_BUILD_SHARED_LIBS)
     add_library(onion SHARED ${ONION_HEADER_FILES} ${ONION_SOURCE_FILES})
 
     # Options for shared library.
-    if(WIN32)
-        target_compile_definitions(onion PRIVATE "ONION_API=__declspec(dllexport)")
-        target_compile_definitions(onion INTERFACE "ONION_API=__declspec(dllimport)")
-    else()
-        target_compile_definitions(onion PUBLIC "ONION_API=__attribute__((visibility(\"default\")))")
-    endif()
+    target_compile_definitions(onion PUBLIC "ONION_API=__attribute__((visibility(\"default\")))")
 
     # Hide symbols and use position independent code.
     set_target_properties(
@@ -71,20 +66,7 @@ target_include_directories(
 # Compiler options.
 include(CheckCXXCompilerFlag)
 
-if(MSVC)
-    target_compile_options(onion PRIVATE /W4 /permissive- /wd4324)
-
-    # Treat warnings as errors.
-    if(ONION_WARNINGS_AS_ERRORS)
-        target_compile_options(onion PRIVATE /WX)
-    endif()
-
-    # Enable address sanitizer.
-    if(ONION_ENABLE_ASAN)
-        target_compile_options(onion PRIVATE /fsanitize=address)
-        target_link_libraries(onion PRIVATE /fsanitize=address)
-    endif()
-elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
     target_compile_options(onion PRIVATE -Wall -Wextra -Woverloaded-virtual -Wold-style-cast)
 
     # Treat warnings as errors.
@@ -99,15 +81,9 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
     endif()
 endif()
 
-# Link system libraries.
-if(WIN32)
-    # Link Windows socket library.
-    target_link_libraries(onion PRIVATE ws2_32)
-elseif(CMAKE_SYSTEM_NAME MATCHES "Linux")
-    # We use io_uring for Linux.
-    include(cmake/liburing.cmake)
-    target_link_libraries(onion PRIVATE uring::uring)
-endif()
+# Link system libraries. We use io_uring for Linux.
+include(cmake/liburing.cmake)
+target_link_libraries(onion PUBLIC uring::uring)
 
 # Add install target if this is the root project.
 include(GNUInstallDirs)
