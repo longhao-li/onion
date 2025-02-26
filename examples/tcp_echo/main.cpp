@@ -114,7 +114,7 @@ static auto server(TcpStream stream) noexcept -> Task<> {
 
             // Handle error.
             if (!result.has_value()) [[unlikely]] {
-                std::fprintf(stderr, "TcpStream::send to %s failed: %s", addrstr.c_str(),
+                std::fprintf(stderr, "TcpStream::send to %s failed: %s\n", addrstr.c_str(),
                              std::strerror(static_cast<int>(result.error())));
                 co_return;
             }

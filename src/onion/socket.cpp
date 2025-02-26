@@ -79,20 +79,6 @@ auto InetAddress::toString() const noexcept -> std::string {
 auto SendAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
     m_ovlp.promise = &promise;
 
-    // Try to send data immediately.
-    int result = ::send(m_socket, m_data, m_size, MSG_DONTWAIT | MSG_NOSIGNAL);
-    if (result >= 0) {
-        m_ovlp.result = result;
-        return false;
-    }
-
-    // Error sending data.
-    int error = errno;
-    if (error != EAGAIN && error != EWOULDBLOCK) {
-        m_ovlp.result = -error;
-        return false;
-    }
-
     // Schedule the send operation.
     auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
     io_uring_sqe *sqe = io_uring_get_sqe(ring);
@@ -107,7 +93,7 @@ auto SendAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
     }
 
     io_uring_prep_send(sqe, m_socket, m_data, m_size, MSG_NOSIGNAL);
-    io_uring_sqe_set_flags(sqe, IOSQE_ASYNC);
+    io_uring_sqe_set_flags(sqe, 0);
     io_uring_sqe_set_data(sqe, &m_ovlp);
 
     io_uring_submit(ring);
@@ -116,20 +102,6 @@ auto SendAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
 
 auto ReceiveAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
     m_ovlp.promise = &promise;
-
-    // Try to receive data immediately.
-    int result = ::recv(m_socket, m_buffer, m_size, MSG_DONTWAIT);
-    if (result >= 0) {
-        m_ovlp.result = result;
-        return false;
-    }
-
-    // Error receiving data.
-    int error = errno;
-    if (error != EAGAIN && error != EWOULDBLOCK) {
-        m_ovlp.result = -error;
-        return false;
-    }
 
     // Schedule the receive operation.
     auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
@@ -145,7 +117,7 @@ auto ReceiveAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
     }
 
     io_uring_prep_recv(sqe, m_socket, m_buffer, m_size, 0);
-    io_uring_sqe_set_flags(sqe, IOSQE_ASYNC);
+    io_uring_sqe_set_flags(sqe, 0);
     io_uring_sqe_set_data(sqe, &m_ovlp);
 
     io_uring_submit(ring);

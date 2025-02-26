@@ -493,7 +493,6 @@ public:
     auto await_suspend(std::coroutine_handle<T>) noexcept -> bool {
         auto *worker = detail::IoContextWorker::current();
         worker->schedule(*m_promise);
-        worker->wakeUp();
         return false;
     }
 
