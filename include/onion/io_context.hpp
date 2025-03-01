@@ -41,7 +41,7 @@ public:
 
     /// \brief
     ///   Destroy this work-stealing queue and release memory.
-    ONION_API ~IoContextWorkerTaskQueue() noexcept;
+    ~IoContextWorkerTaskQueue() noexcept;
 
     /// \brief
     ///   \c IoContextWorkerTaskQueue is not copyable.
