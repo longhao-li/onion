@@ -1,8 +1,11 @@
 #include "onion/hash.hpp"
 
+#include <cstdint>
+
 using namespace onion;
 
-auto onion::hash64(const void *data, std::size_t size) noexcept -> std::uint64_t {
+auto onion::hash(const void *data, std::size_t size) noexcept -> std::size_t {
+#if defined(SIZE_MAX) && (SIZE_MAX >= UINT64_MAX)
     constexpr std::uint64_t RapidHashSeed = 0xBDD89AA982704029ULL;
 
     constexpr std::uint64_t RapidHashSecret[3] = {
@@ -144,4 +147,7 @@ auto onion::hash64(const void *data, std::size_t size) noexcept -> std::uint64_t
     temp = static_cast<__uint128_t>(a ^ RapidHashSecret[0] ^ size) *
            static_cast<__uint128_t>(b ^ RapidHashSecret[1]);
     return static_cast<std::uint64_t>((temp & 0xFFFF'FFFF'FFFF'FFFFULL) ^ (temp >> 64));
+#else
+#    error "32-bit platform is not supported yet."
+#endif
 }
