@@ -1,8 +1,8 @@
 #include "onion/hash.hpp"
 
-#include <cstdint>
-
 using namespace onion;
+using namespace onion::detail;
+using namespace onion::detail::hash;
 
 auto onion::hash(const void *data, std::size_t size) noexcept -> std::size_t {
 #if defined(SIZE_MAX) && (SIZE_MAX >= UINT64_MAX)
@@ -151,3 +151,14 @@ auto onion::hash(const void *data, std::size_t size) noexcept -> std::size_t {
 #    error "32-bit platform is not supported yet."
 #endif
 }
+
+alignas(16) constexpr const ControlFlag onion::detail::hash::EmptyGroup[32] = {
+    ControlFlag::Zero,     ControlFlag::Zero,  ControlFlag::Zero,  ControlFlag::Zero,
+    ControlFlag::Zero,     ControlFlag::Zero,  ControlFlag::Zero,  ControlFlag::Zero,
+    ControlFlag::Zero,     ControlFlag::Zero,  ControlFlag::Zero,  ControlFlag::Zero,
+    ControlFlag::Zero,     ControlFlag::Zero,  ControlFlag::Zero,  ControlFlag::Zero,
+    ControlFlag::Sentinel, ControlFlag::Empty, ControlFlag::Empty, ControlFlag::Empty,
+    ControlFlag::Empty,    ControlFlag::Empty, ControlFlag::Empty, ControlFlag::Empty,
+    ControlFlag::Empty,    ControlFlag::Empty, ControlFlag::Empty, ControlFlag::Empty,
+    ControlFlag::Empty,    ControlFlag::Empty, ControlFlag::Empty, ControlFlag::Empty,
+};
