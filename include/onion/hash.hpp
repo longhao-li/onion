@@ -5,6 +5,7 @@
 #endif
 
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <optional>
@@ -200,6 +201,54 @@ struct Hash<std::optional<T>> : Hash<T> {
     auto operator()(std::nullopt_t) const noexcept -> result_type {
         bool temp = false;
         return ::onion::hash(&temp, sizeof(temp));
+    }
+};
+
+/// \struct Hash
+/// \tparam Rep
+///   Representation type of duration to hash.
+/// \tparam Period
+///   Period type of duration to hash.
+/// \brief
+///   Hasher type for duration types.
+template <typename Rep, typename Period>
+struct Hash<std::chrono::duration<Rep, Period>> {
+    using argument_type = std::chrono::duration<Rep, Period>;
+    using result_type   = std::size_t;
+
+    /// \brief
+    ///   Calculate hash value for the given duration.
+    /// \param value
+    ///   The duration to hash.
+    /// \return
+    ///   Hash value of the duration.
+    [[nodiscard]]
+    auto operator()(argument_type value) const noexcept -> result_type {
+        return ::onion::hash(&value, sizeof(value));
+    }
+};
+
+/// \struct Hash
+/// \tparam Clock
+///   Clock type of time point to hash.
+/// \tparam Duration
+///   Duration type of time point to hash.
+/// \brief
+///   Hasher type for time point types.
+template <typename Clock, typename Duration>
+struct Hash<std::chrono::time_point<Clock, Duration>> {
+    using argument_type = std::chrono::time_point<Clock, Duration>;
+    using result_type   = std::size_t;
+
+    /// \brief
+    ///   Calculate hash value for the given time point.
+    /// \param value
+    ///   The time point to hash.
+    /// \return
+    ///   Hash value of the time point.
+    [[nodiscard]]
+    auto operator()(argument_type value) const noexcept -> result_type {
+        return ::onion::hash(&value, sizeof(value));
     }
 };
 
