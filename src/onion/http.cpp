@@ -377,17 +377,17 @@ static auto parseHttpDate(const char *first,
     return first;
 }
 
-HttpHeaders::HttpHeaders(const HttpHeaders &other) noexcept = default;
+HttpHeader::HttpHeader(const HttpHeader &other) noexcept = default;
 
-HttpHeaders::HttpHeaders(HttpHeaders &&other) noexcept = default;
+HttpHeader::HttpHeader(HttpHeader &&other) noexcept = default;
 
-HttpHeaders::~HttpHeaders() noexcept = default;
+HttpHeader::~HttpHeader() noexcept = default;
 
-auto HttpHeaders::operator=(const HttpHeaders &other) noexcept -> HttpHeaders & = default;
+auto HttpHeader::operator=(const HttpHeader &other) noexcept -> HttpHeader & = default;
 
-auto HttpHeaders::operator=(HttpHeaders &&other) noexcept -> HttpHeaders & = default;
+auto HttpHeader::operator=(HttpHeader &&other) noexcept -> HttpHeader & = default;
 
-auto HttpHeaders::add(std::string_view key, std::string_view value) noexcept -> void {
+auto HttpHeader::add(std::string_view key, std::string_view value) noexcept -> void {
     auto result = m_headers.try_emplace(key, value);
     if (result.second)
         return;
@@ -399,16 +399,16 @@ auto HttpHeaders::add(std::string_view key, std::string_view value) noexcept -> 
         mapped.assign(value);
 }
 
-auto HttpHeaders::erase(std::string_view key) noexcept -> bool {
+auto HttpHeader::erase(std::string_view key) noexcept -> bool {
     std::size_t count = m_headers.erase(key);
     return count != 0;
 }
 
-auto HttpHeaders::clear() noexcept -> void {
+auto HttpHeader::clear() noexcept -> void {
     m_headers.clear();
 }
 
-auto HttpHeaders::contentLength() const noexcept -> std::optional<std::size_t> {
+auto HttpHeader::contentLength() const noexcept -> std::optional<std::size_t> {
     auto iter = m_headers.find("Content-Length");
     if (iter == m_headers.end())
         return std::nullopt;
@@ -427,7 +427,7 @@ auto HttpHeaders::contentLength() const noexcept -> std::optional<std::size_t> {
     return length;
 }
 
-auto HttpHeaders::setContentLength(std::size_t length) noexcept -> void {
+auto HttpHeader::setContentLength(std::size_t length) noexcept -> void {
     std::size_t size = 0;
     char buffer[21];
 
@@ -440,7 +440,7 @@ auto HttpHeaders::setContentLength(std::size_t length) noexcept -> void {
     m_headers["Content-Length"] = std::string_view{buffer, size};
 }
 
-auto HttpHeaders::date() const noexcept -> std::optional<std::chrono::system_clock::time_point> {
+auto HttpHeader::date() const noexcept -> std::optional<std::chrono::system_clock::time_point> {
     auto iter = m_headers.find("Date");
     if (iter == m_headers.end())
         return std::nullopt;
@@ -455,7 +455,7 @@ auto HttpHeaders::date() const noexcept -> std::optional<std::chrono::system_clo
     return time;
 }
 
-auto HttpHeaders::setDate(std::chrono::system_clock::time_point time) noexcept -> void {
+auto HttpHeader::setDate(std::chrono::system_clock::time_point time) noexcept -> void {
     constexpr const char dayNameList[7][3] = {
         {'S', 'u', 'n'}, {'M', 'o', 'n'}, {'T', 'u', 'e'}, {'W', 'e', 'd'},
         {'T', 'h', 'u'}, {'F', 'r', 'i'}, {'S', 'a', 't'},
@@ -517,7 +517,7 @@ auto HttpHeaders::setDate(std::chrono::system_clock::time_point time) noexcept -
     m_headers["Date"] = timeString;
 }
 
-auto HttpHeaders::isChunked() const noexcept -> bool {
+auto HttpHeader::isChunked() const noexcept -> bool {
     auto iter = m_headers.find("Transfer-Encoding");
     if (iter == m_headers.end())
         return false;

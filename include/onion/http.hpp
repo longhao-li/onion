@@ -137,10 +137,10 @@ enum class HttpStatus : std::uint16_t {
     NetworkAuthenticationRequired = 511,
 };
 
-/// \class HttpHeaders
+/// \class HttpHeader
 /// \brief
 ///   HTTP header container.
-class HttpHeaders {
+class HttpHeader {
 public:
     using key_type        = std::string;
     using mapped_type     = std::string;
@@ -159,24 +159,24 @@ public:
 
     /// \brief
     ///   Create an empty \c HttpHeaders object.
-    HttpHeaders() noexcept = default;
+    HttpHeader() noexcept = default;
 
     /// \brief
     ///   Copy constructor of \c HttpHeaders.
     /// \param[in] other
     ///   The \c HttpHeaders object to copy from.
-    ONION_API HttpHeaders(const HttpHeaders &other) noexcept;
+    ONION_API HttpHeader(const HttpHeader &other) noexcept;
 
     /// \brief
     ///   Move constructor of \c HttpHeaders.
     /// \param[inout] other
     ///   The \c HttpHeaders object to move from. The moved \c HttpHeaders object will be empty
     ///   after the move.
-    ONION_API HttpHeaders(HttpHeaders &&other) noexcept;
+    ONION_API HttpHeader(HttpHeader &&other) noexcept;
 
     /// \brief
     ///   Destroy the \c HttpHeaders object.
-    ONION_API ~HttpHeaders() noexcept;
+    ONION_API ~HttpHeader() noexcept;
 
     /// \brief
     ///   Copy assignment operator of \c HttpHeaders.
@@ -184,7 +184,7 @@ public:
     ///   The \c HttpHeaders object to copy from.
     /// \return
     ///   Reference to this \c HttpHeaders object.
-    ONION_API auto operator=(const HttpHeaders &other) noexcept -> HttpHeaders &;
+    ONION_API auto operator=(const HttpHeader &other) noexcept -> HttpHeader &;
 
     /// \brief
     ///   Move assignment operator of \c HttpHeaders.
@@ -193,7 +193,7 @@ public:
     ///   after the move.
     /// \return
     ///   Reference to this \c HttpHeaders object.
-    ONION_API auto operator=(HttpHeaders &&other) noexcept -> HttpHeaders &;
+    ONION_API auto operator=(HttpHeader &&other) noexcept -> HttpHeader &;
 
     /// \brief
     ///   Get iterator to the first header of this container.
@@ -389,6 +389,85 @@ private:
     ///   We store headers in a case-insensitive manner. The HTTP standard allows multiple headers
     ///   and we compress them into one element in the hash map with the values separated by comma.
     container_type m_headers;
+};
+
+/// \struct HttpUrl
+/// \brief
+///   Represents a URL.
+struct HttpUrl {
+    /// \brief
+    ///   Scheme of the URL.
+    std::string scheme;
+
+    /// \brief
+    ///   Username of the URL.
+    std::string username;
+
+    /// \brief
+    ///   Password of the URL.
+    std::string password;
+
+    /// \brief
+    ///   Host or Host:Port of the URL.
+    std::string host;
+
+    /// \brief
+    ///   Path of the URL. Relative path may not start with '/'.
+    std::string path;
+
+    /// \brief
+    ///   Query string in URL. Array queries will be stored separately by key directly.
+    HashMap<std::string, std::string> query;
+
+    /// \brief
+    ///   Fragment of the URL without the leading '#'.
+    std::string fragment;
+};
+
+/// \struct HttpRequest
+/// \brief
+///   Represents a HTTP request.
+struct HttpRequest {
+    /// \brief
+    ///   HTTP request method for this request.
+    HttpMethod method;
+
+    /// \brief
+    ///   HTTP version of this request.
+    HttpVersion version;
+
+    /// \brief
+    ///   URL of this request.
+    HttpUrl url;
+
+    /// \brief
+    ///   HTTP header items.
+    HttpHeader header;
+
+    /// \brief
+    ///   HTTP body of this request.
+    std::string body;
+};
+
+/// \struct HttpResponse
+/// \brief
+///   Represents a HTTP response.
+struct HttpResponse {
+    /// \brief
+    ///   HTTP version of this response.
+    HttpVersion version;
+
+    /// \brief
+    ///   HTTP status code of this response.
+    HttpStatus status;
+
+    /// \brief
+    ///   HTTP header items.
+    HttpHeader header;
+
+    /// \brief
+    ///   HTTP body of this response.
+    std::string body;
 };
 
 } // namespace onion
