@@ -1,5 +1,7 @@
 #include "onion/http.hpp"
 
+#include <llhttp.h>
+
 #include <algorithm>
 
 using namespace onion;

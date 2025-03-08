@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hash.hpp"
+#include "socket.hpp"
 
 namespace onion {
 namespace detail {
@@ -441,6 +442,11 @@ struct HttpRequest {
     HttpUrl url;
 
     /// \brief
+    ///   Path parameters. Path parameters are set by HTTP router. This is different from URL
+    ///   queries.
+    HashMap<std::string, std::string> params;
+
+    /// \brief
     ///   HTTP header items.
     HttpHeader header;
 
@@ -468,6 +474,32 @@ struct HttpResponse {
     /// \brief
     ///   HTTP body of this response.
     std::string body;
+};
+
+/// \class HttpServer
+/// \brief
+///   HTTP web server application.
+class HttpServer;
+
+/// \struct HttpContext
+/// \brief
+///   HTTP context for current request.
+struct HttpContext {
+    /// \brief
+    ///   HTTP server for current HTTP session.
+    HttpServer &server;
+
+    /// \brief
+    ///   TCP stream for current HTTP session.
+    TcpStream &connection;
+
+    /// \brief
+    ///   Current HTTP request.
+    HttpRequest request;
+
+    /// \brief
+    ///   The HTTP response to be sent.
+    HttpResponse response;
 };
 
 } // namespace onion
