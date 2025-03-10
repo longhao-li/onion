@@ -3,6 +3,9 @@
 #include "hash.hpp"
 #include "socket.hpp"
 
+#include <deque>
+#include <functional>
+
 namespace onion {
 namespace detail {
 
@@ -500,6 +503,79 @@ struct HttpContext {
     /// \brief
     ///   The HTTP response to be sent.
     HttpResponse response;
+};
+
+/// \class HttpRouter
+/// \brief
+///   Router for HTTP requests.
+class HttpRouter {
+public:
+    /// \brief
+    ///   Create an empty router.
+    ONION_API HttpRouter() noexcept;
+
+    /// \brief
+    ///   \c HttpRouter is not copyable.
+    HttpRouter(const HttpRouter &other) = delete;
+
+    /// \brief
+    ///   Move constructor of \c HttpRouter.
+    /// \param[inout] other
+    ///   The \c HttpRouter object to be moved. The moved \c HttpRouter object will be in a valid
+    ///   but undefined state.
+    HttpRouter(HttpRouter &&other) noexcept = default;
+
+    /// \brief
+    ///   Destroy this \c HttpRouter.
+    ONION_API ~HttpRouter() noexcept;
+
+    /// \brief
+    ///   \c HttpRouter is not copyable.
+    auto operator=(const HttpRouter &other) = delete;
+
+    /// \brief
+    ///   Move assignment operator of \c HttpRouter.
+    /// \param[inout] other
+    ///   The \c HttpRouter object to be moved. The moved \c HttpRouter object will be in a valid
+    ///   but undefined state.
+    ONION_API auto operator=(HttpRouter &&other) noexcept -> HttpRouter &;
+
+    /// \brief
+    ///   Try to add a new route rule to this router.
+    /// \param path
+    ///   Path pattern to match. The path pattern may contain placeholders like ":name".
+    /// \param handler
+    ///   Handler function to be called when the path pattern is matched.
+    /// \retval true
+    ///   The route rule is added successfully.
+    /// \retval false
+    ///   There is already a route rule with the same path pattern.
+    ONION_API auto add(std::string_view path,
+                       std::function<Task<void>(HttpContext &)> handler) noexcept -> bool;
+
+    /// \brief
+    ///   Try to match a request to a route rule.
+    /// \param[inout] request
+    ///   The HTTP request to match routing rule.
+    /// \return
+    ///   A task that will be resolved when the request is matched to a route rule. Params of
+    ///   \p request will also be filled according to the path pattern. An empty task will be
+    ///   returned if there is no matching route rule.
+    [[nodiscard]]
+    ONION_API auto match(HttpRequest &request) const noexcept -> Task<void>;
+
+private:
+    /// \struct RadixTreeNode
+    /// \brief
+    ///   Node type for radix tree.
+    struct RadixTreeNode {
+        RadixTreeNode *matchAny;
+        HashMap<std::string, RadixTreeNode *> next;
+        std::string pattern;
+        std::function<Task<void>(HttpContext &)> handler;
+    };
+
+    std::deque<RadixTreeNode> m_nodes;
 };
 
 } // namespace onion
