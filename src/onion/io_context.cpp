@@ -1,8 +1,5 @@
 #include "onion/io_context.hpp"
 
-#include <liburing.h>
-
-#include <sys/eventfd.h>
 #include <sys/utsname.h>
 
 #include <array>
@@ -483,14 +480,6 @@ auto IoContextWorkerTaskQueue::advanceStealIndex(std::size_t current) noexcept -
 }
 
 /// \brief
-///   Wake up key for \c eventfd in \c io_uring.
-inline constexpr eventfd_t WakeUpKey = 1;
-
-/// \brief
-///   Stop key for \c eventfd in \c io_uring.
-inline constexpr eventfd_t StopKey = 0x8000000000000000ULL;
-
-/// \brief
 ///   Worker for each thread.
 static thread_local IoContextWorker *threadWorker;
 
@@ -500,7 +489,7 @@ IoContextWorker::IoContextWorker(IoContext &context)
       m_maxStealRetry{std::max<std::size_t>(context.size() / 4, 1)},
       m_randomEngine{std::random_device{}()},
       m_randomDistribution{},
-      m_uring{std::malloc(sizeof(io_uring))},
+      m_uring{static_cast<io_uring *>(std::malloc(sizeof(io_uring)))},
       m_wakeUp{-1},
       m_taskQueue{16384},
       m_localTasksMutex{},
@@ -524,10 +513,9 @@ IoContextWorker::IoContextWorker(IoContext &context)
         .cq_off         = {},
     };
 
-    auto *ring = static_cast<io_uring *>(m_uring);
-    int result = io_uring_queue_init_params(32768, ring, &params);
+    int result = io_uring_queue_init_params(32768, m_uring, &params);
     if (result != 0) [[unlikely]] {
-        std::free(ring);
+        std::free(m_uring);
         throw std::system_error{-result, std::system_category(), "Failed to create io_uring"};
     }
 
@@ -535,8 +523,8 @@ IoContextWorker::IoContextWorker(IoContext &context)
     m_wakeUp = eventfd(0, EFD_CLOEXEC);
     if (m_wakeUp < 0) [[unlikely]] {
         int error = errno;
-        io_uring_queue_exit(ring);
-        std::free(ring);
+        io_uring_queue_exit(m_uring);
+        std::free(m_uring);
         throw std::system_error{error, std::system_category(), "Failed to create eventfd"};
     }
 }
@@ -559,10 +547,8 @@ IoContextWorker::IoContextWorker(IoContextWorker &&other) noexcept
 
 IoContextWorker::~IoContextWorker() noexcept {
     if (m_uring != nullptr) {
-        auto *ring = static_cast<io_uring *>(m_uring);
-        io_uring_queue_exit(ring);
-        std::free(ring);
-
+        io_uring_queue_exit(m_uring);
+        std::free(m_uring);
         ::close(m_wakeUp);
     }
 }
@@ -659,29 +645,27 @@ auto IoContextWorker::start() noexcept -> void {
             stealTasks();
     };
 
-    auto *const ring  = static_cast<io_uring *>(m_uring);
     io_uring_cqe *cqe = nullptr;
-
     __kernel_timespec timeout{};
     eventfd_t wakeUpBuffer = 0;
 
     // Prepare for wake up event. Older versions of linux kernel does not support multishot read. We
     // would manually simulate it.
-    const auto prepareWakeup = [this, ring, &wakeUpBuffer]() -> void {
-        io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    const auto prepareWakeup = [this, &wakeUpBuffer]() -> void {
+        io_uring_sqe *sqe = io_uring_get_sqe(m_uring);
         while (sqe == nullptr) [[unlikely]] {
             // Terminate if failed to prepare or wake up event. Avoid undefined behavior.
-            if (io_uring_submit(ring)) [[unlikely]]
+            if (io_uring_submit(m_uring)) [[unlikely]]
                 std::terminate();
 
-            sqe = io_uring_get_sqe(ring);
+            sqe = io_uring_get_sqe(m_uring);
         }
 
         io_uring_prep_read(sqe, m_wakeUp, &wakeUpBuffer, sizeof(wakeUpBuffer), 0);
         io_uring_sqe_set_data(sqe, nullptr);
 
         // Terminate if failed to prepare or wake up event. Avoid undefined behavior.
-        if (io_uring_submit(ring) < 0) [[unlikely]]
+        if (io_uring_submit(m_uring) < 0) [[unlikely]]
             std::terminate();
     };
 
@@ -693,7 +677,7 @@ auto IoContextWorker::start() noexcept -> void {
         timeout.tv_sec  = 1;
         timeout.tv_nsec = 0;
 
-        int result = io_uring_wait_cqe_timeout(ring, &cqe, &timeout);
+        int result = io_uring_wait_cqe_timeout(m_uring, &cqe, &timeout);
         while (result == 0) {
             auto *ovlp = static_cast<Overlapped *>(io_uring_cqe_get_data(cqe));
 
@@ -701,14 +685,14 @@ auto IoContextWorker::start() noexcept -> void {
                 ovlp->result = cqe->res;
                 this->schedule(*ovlp->promise);
             } else {
-                if (wakeUpBuffer >= StopKey) [[unlikely]]
+                if (wakeUpBuffer >= IoContextStopKey) [[unlikely]]
                     shouldStop = true;
-                else
+                else if (wakeUpBuffer > 0)
                     prepareWakeup();
             }
 
-            io_uring_cq_advance(ring, 1);
-            result = io_uring_peek_cqe(ring, &cqe);
+            io_uring_cq_advance(m_uring, 1);
+            result = io_uring_peek_cqe(m_uring, &cqe);
         }
 
         // Handle tasks.
@@ -722,26 +706,8 @@ auto IoContextWorker::start() noexcept -> void {
     m_isRunning.store(false, std::memory_order_relaxed);
 }
 
-auto IoContextWorker::stop() noexcept -> void {
-    // Post a stop event to eventfd.
-    eventfd_write(m_wakeUp, StopKey);
-}
-
 auto IoContextWorker::current() noexcept -> IoContextWorker * {
     return threadWorker;
-}
-
-auto IoContextWorker::schedule(PromiseBase &promise) noexcept -> void {
-    if (!m_taskQueue.tryPush(&promise)) [[unlikely]] {
-        std::lock_guard<std::mutex> lock{m_localTasksMutex};
-        m_localTasks.push_back(&promise);
-        m_hasLocalTask.store(true, std::memory_order_relaxed);
-    }
-}
-
-auto IoContextWorker::wakeUp() noexcept -> void {
-    // Post a wake up event to eventfd.
-    eventfd_write(m_wakeUp, WakeUpKey);
 }
 
 IoContext::IoContext() : m_isRunning{false}, m_next{0}, m_workers{} {
@@ -774,54 +740,4 @@ auto IoContext::start() noexcept -> void {
         thread.join();
 
     m_isRunning.store(false, std::memory_order_relaxed);
-}
-
-auto IoContext::stop() noexcept -> void {
-    for (auto &worker : m_workers)
-        worker.stop();
-}
-
-auto YieldAwaitable::await_suspend(PromiseBase &promise) noexcept -> void {
-    m_ovlp.promise = &promise;
-
-    // FIXME: Possible infinite loop.
-    auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
-    io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    while (sqe == nullptr) [[unlikely]] {
-        io_uring_submit(ring);
-        sqe = io_uring_get_sqe(ring);
-    }
-
-    io_uring_prep_nop(sqe);
-    io_uring_sqe_set_flags(sqe, 0);
-    io_uring_sqe_set_data(sqe, &m_ovlp);
-
-    io_uring_submit(ring);
-}
-
-auto SleepAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
-    m_ovlp.promise = &promise;
-
-    // No need to sleep.
-    if (m_timeout.tv_sec == 0 && m_timeout.tv_nsec == 0) [[unlikely]]
-        return false;
-
-    // FIXME: Possible infinite loop.
-    auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
-    io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    while (sqe == nullptr) [[unlikely]] {
-        io_uring_submit(ring);
-        sqe = io_uring_get_sqe(ring);
-    }
-
-    // Seems like that io_uring does not provide a mechanism to wait for timeout event only.
-    static_assert(sizeof(m_timeout) == sizeof(__kernel_timespec));
-    auto *timeout = reinterpret_cast<__kernel_timespec *>(&m_timeout);
-
-    io_uring_prep_timeout(sqe, timeout, std::numeric_limits<unsigned>::max(), 0);
-    io_uring_sqe_set_flags(sqe, 0);
-    io_uring_sqe_set_data(sqe, &m_ovlp);
-
-    io_uring_submit(ring);
-    return true;
 }

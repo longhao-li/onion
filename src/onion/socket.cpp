@@ -1,10 +1,6 @@
 #include "onion/socket.hpp"
 
-#include <liburing.h>
-
 #include <arpa/inet.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
 
 #include <algorithm>
 #include <array>
@@ -76,54 +72,6 @@ auto InetAddress::toString() const noexcept -> std::string {
     return {buffer.data(), length};
 }
 
-auto SendAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
-    m_ovlp.promise = &promise;
-
-    // Schedule the send operation.
-    auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
-    io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    while (sqe == nullptr) [[unlikely]] {
-        int result = io_uring_submit(ring);
-        if (result < 0) [[unlikely]] {
-            m_ovlp.result = result;
-            return false;
-        }
-
-        sqe = io_uring_get_sqe(ring);
-    }
-
-    io_uring_prep_send(sqe, m_socket, m_data, m_size, MSG_NOSIGNAL);
-    io_uring_sqe_set_flags(sqe, 0);
-    io_uring_sqe_set_data(sqe, &m_ovlp);
-
-    io_uring_submit(ring);
-    return true;
-}
-
-auto ReceiveAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
-    m_ovlp.promise = &promise;
-
-    // Schedule the receive operation.
-    auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
-    io_uring_sqe *sqe = io_uring_get_sqe(ring);
-    while (sqe == nullptr) [[unlikely]] {
-        int result = io_uring_submit(ring);
-        if (result < 0) [[unlikely]] {
-            m_ovlp.result = result;
-            return false;
-        }
-
-        sqe = io_uring_get_sqe(ring);
-    }
-
-    io_uring_prep_recv(sqe, m_socket, m_buffer, m_size, 0);
-    io_uring_sqe_set_flags(sqe, 0);
-    io_uring_sqe_set_data(sqe, &m_ovlp);
-
-    io_uring_submit(ring);
-    return true;
-}
-
 auto TcpStream::ConnectAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
     m_ovlp.promise = &promise;
 
@@ -138,7 +86,7 @@ auto TcpStream::ConnectAwaitable::await_suspend(PromiseBase &promise) noexcept -
     }
 
     // Schedule the connect operation.
-    auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
+    io_uring *ring    = IoContextWorker::current()->uring();
     io_uring_sqe *sqe = io_uring_get_sqe(ring);
     while (sqe == nullptr) [[unlikely]] {
         int result = io_uring_submit(ring);
@@ -156,23 +104,6 @@ auto TcpStream::ConnectAwaitable::await_suspend(PromiseBase &promise) noexcept -
 
     io_uring_submit(ring);
     return true;
-}
-
-auto TcpStream::ConnectAwaitable::await_resume() const noexcept -> std::errc {
-    if (m_ovlp.result == 0) [[likely]] {
-        if (m_stream->m_socket != InvalidSocket)
-            ::close(m_stream->m_socket);
-
-        m_stream->m_socket  = m_socket;
-        m_stream->m_address = *m_address;
-
-        return {};
-    }
-
-    if (m_socket != InvalidSocket)
-        ::close(m_socket);
-
-    return static_cast<std::errc>(-m_ovlp.result);
 }
 
 TcpStream::~TcpStream() noexcept {
@@ -196,42 +127,6 @@ auto TcpStream::operator=(TcpStream &&other) noexcept -> TcpStream & {
     return *this;
 }
 
-auto TcpStream::setKeepAlive(bool enable) noexcept -> std::errc {
-    const int value = enable ? 1 : 0;
-    if (setsockopt(m_socket, SOL_SOCKET, SO_KEEPALIVE, &value, sizeof(value)) == -1) [[unlikely]]
-        return static_cast<std::errc>(errno);
-    return {};
-}
-
-auto TcpStream::setNoDelay(bool enable) noexcept -> std::errc {
-    int value = enable ? 1 : 0;
-    if (setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY, &value, sizeof(value)) == -1) [[unlikely]]
-        return static_cast<std::errc>(errno);
-    return {};
-}
-
-auto TcpStream::shutdown(ShutdownOption option) noexcept -> std::errc {
-    int opt;
-
-    switch (option) {
-    case ShutdownOption::Read:  opt = SHUT_RD; break;
-    case ShutdownOption::Write: opt = SHUT_WR; break;
-    case ShutdownOption::Both:  opt = SHUT_RDWR; break;
-    default:                    return std::errc::invalid_argument;
-    }
-
-    if (::shutdown(m_socket, opt) == -1) [[unlikely]]
-        return static_cast<std::errc>(errno);
-    return {};
-}
-
-auto TcpStream::close() noexcept -> void {
-    if (m_socket != InvalidSocket) {
-        ::close(m_socket);
-        m_socket = InvalidSocket;
-    }
-}
-
 auto TcpListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
     m_ovlp.promise = &promise;
 
@@ -239,7 +134,7 @@ auto TcpListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept 
     auto *addr = reinterpret_cast<sockaddr *>(&m_address);
 
     // Schedule the accept operation.
-    auto *ring        = static_cast<io_uring *>(IoContextWorker::current()->uring());
+    io_uring *ring    = IoContextWorker::current()->uring();
     io_uring_sqe *sqe = io_uring_get_sqe(ring);
     while (sqe == nullptr) [[unlikely]] {
         int result = io_uring_submit(ring);
@@ -257,13 +152,6 @@ auto TcpListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept 
 
     io_uring_submit(ring);
     return true;
-}
-
-auto TcpListener::AcceptAwaitable::await_resume() const noexcept
-    -> std::expected<TcpStream, std::errc> {
-    if (m_ovlp.result < 0) [[unlikely]]
-        return std::unexpected{static_cast<std::errc>(-m_ovlp.result)};
-    return std::expected<TcpStream, std::errc>{std::in_place, m_ovlp.result, m_address};
 }
 
 TcpListener::~TcpListener() noexcept {
@@ -332,11 +220,4 @@ auto TcpListener::listen(const InetAddress &address) noexcept -> std::errc {
     m_address = address;
 
     return {};
-}
-
-auto TcpListener::close() noexcept -> void {
-    if (m_socket != InvalidSocket) {
-        ::close(m_socket);
-        m_socket = InvalidSocket;
-    }
 }

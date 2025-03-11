@@ -85,7 +85,7 @@ endif()
 include(cmake/liburing.cmake)
 include(cmake/llhttp.cmake)
 
-target_link_libraries(onion PRIVATE uring::uring llhttp::llhttp)
+target_link_libraries(onion PUBLIC uring::uring PRIVATE llhttp::llhttp)
 
 # Add install target if this is the root project.
 include(GNUInstallDirs)

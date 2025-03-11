@@ -2,6 +2,10 @@
 
 #include "task.hpp"
 
+#include <liburing.h>
+
+#include <sys/eventfd.h>
+
 #include <atomic>
 #include <mutex>
 #include <random>
@@ -20,7 +24,7 @@ public:
     /// \param capacity
     ///   Expected maximum number of tasks that could be stored in this queue. This value will
     ///   always be rounded up to the block size.
-    explicit IoContextWorkerTaskQueue(std::size_t capacity) noexcept;
+    ONION_API explicit IoContextWorkerTaskQueue(std::size_t capacity) noexcept;
 
     /// \brief
     ///   \c IoContextWorkerTaskQueue is not copyable.
@@ -41,7 +45,7 @@ public:
 
     /// \brief
     ///   Destroy this work-stealing queue and release memory.
-    ~IoContextWorkerTaskQueue() noexcept;
+    ONION_API ~IoContextWorkerTaskQueue() noexcept;
 
     /// \brief
     ///   \c IoContextWorkerTaskQueue is not copyable.
@@ -61,7 +65,7 @@ public:
     /// \retval false
     ///   We should not steal tasks from this task queue.
     [[nodiscard]]
-    auto shouldSteal(std::size_t random) const noexcept -> bool;
+    ONION_API auto shouldSteal(std::size_t random) const noexcept -> bool;
 
     /// \brief
     ///   Try to push a task into the queue.
@@ -71,7 +75,7 @@ public:
     ///   The task is successfully pushed into the queue.
     /// \retval false
     ///   The queue is full and the task is not pushed into the queue.
-    auto tryPush(PromiseBase *value) noexcept -> bool;
+    ONION_API auto tryPush(PromiseBase *value) noexcept -> bool;
 
     /// \brief
     ///   Try to pop a task from this task queue. This method could only be called in the owner
@@ -79,7 +83,7 @@ public:
     /// \return
     ///   Pointer to the promise of the task popped from the queue. Otherwise, return \c nullptr.
     [[nodiscard]]
-    auto tryPop() noexcept -> PromiseBase *;
+    ONION_API auto tryPop() noexcept -> PromiseBase *;
 
     /// \brief
     ///   Try to steal a task from this task queue. This method could only be called in the thief
@@ -87,7 +91,7 @@ public:
     /// \return
     ///   Pointer to the promise of the task stolen from the queue. Otherwise, return \c nullptr.
     [[nodiscard]]
-    auto trySteal() noexcept -> PromiseBase *;
+    ONION_API auto trySteal() noexcept -> PromiseBase *;
 
 private:
     /// \brief
@@ -157,6 +161,14 @@ struct Overlapped {
     PromiseBase *promise;
 };
 
+/// \brief
+///   Wake up key for \c eventfd in \c io_uring.
+inline constexpr eventfd_t IoContextWakeUpKey = 1;
+
+/// \brief
+///   Stop key for \c eventfd in \c io_uring.
+inline constexpr eventfd_t IoContextStopKey = 0x8000000000000000ULL;
+
 /// \class IoContextWorker
 /// \brief
 ///   Worker class for \c IoContext.
@@ -225,7 +237,10 @@ public:
     /// \brief
     ///   Request this worker to stop. This method only sends a stop request to this worker and
     ///   returns immediately. This method is concurrent safe.
-    auto stop() noexcept -> void;
+    auto stop() noexcept -> void {
+        // Post a stop event to eventfd.
+        eventfd_write(m_wakeUp, IoContextStopKey);
+    }
 
     /// \brief
     ///   Schedule a task in this worker. This method is concurrent safe.
@@ -244,8 +259,8 @@ public:
             m_hasLocalTask.store(true, std::memory_order_relaxed);
         }
 
-        // Handle the scheduled task as soon as possible.
-        wakeUp();
+        // Post a wake up event to eventfd. Handle the scheduled task as soon as possible.
+        eventfd_write(m_wakeUp, IoContextWakeUpKey);
     }
 
     /// \brief
@@ -253,7 +268,7 @@ public:
     /// \return
     ///   Pointer to \c io_uring of this worker.
     [[nodiscard]]
-    auto uring() const noexcept -> void * {
+    auto uring() const noexcept -> io_uring * {
         return m_uring;
     }
 
@@ -270,11 +285,13 @@ private:
     ///   For internal usage. Schedule a task in this worker. This method is not concurrent safe.
     /// \param[in] promise
     ///   Promise of the task to be scheduled.
-    ONION_API auto schedule(PromiseBase &promise) noexcept -> void;
-
-    /// \brief
-    ///   Wake up the IO multiplexer of this worker. This method is concurrent safe.
-    ONION_API auto wakeUp() noexcept -> void;
+    auto schedule(PromiseBase &promise) noexcept -> void {
+        if (!m_taskQueue.tryPush(&promise)) [[unlikely]] {
+            std::lock_guard<std::mutex> lock{m_localTasksMutex};
+            m_localTasks.push_back(&promise);
+            m_hasLocalTask.store(true, std::memory_order_relaxed);
+        }
+    }
 
     friend class ::onion::ScheduleAwaitable;
 
@@ -301,7 +318,7 @@ private:
 
     /// \brief
     ///   Pointer to \c io_uring for this worker.
-    void *m_uring;
+    io_uring *m_uring;
 
     /// \brief
     ///   Wake up eventfd for this worker.
@@ -387,7 +404,10 @@ public:
     /// \brief
     ///   Request all workers in this \c IoContext to stop. This method only sends a stop request to
     ///   all workers and returns immediately. This method is concurrent safe.
-    ONION_API auto stop() noexcept -> void;
+    auto stop() noexcept -> void {
+        for (auto &worker : m_workers)
+            worker.stop();
+    }
 
     /// \brief
     ///   Dispatch tasks into all workers in this \c IoContext. This method is concurrent safe.
@@ -557,7 +577,23 @@ public:
     ///   coroutine immediately.
     /// \param[in] promise
     ///   Promise of the coroutine to be yielded.
-    ONION_API auto await_suspend(detail::PromiseBase &promise) noexcept -> void;
+    auto await_suspend(detail::PromiseBase &promise) noexcept -> void {
+        m_ovlp.promise = &promise;
+
+        // FIXME: Possible infinite loop.
+        io_uring *ring    = detail::IoContextWorker::current()->uring();
+        io_uring_sqe *sqe = io_uring_get_sqe(ring);
+        while (sqe == nullptr) [[unlikely]] {
+            io_uring_submit(ring);
+            sqe = io_uring_get_sqe(ring);
+        }
+
+        io_uring_prep_nop(sqe);
+        io_uring_sqe_set_flags(sqe, 0);
+        io_uring_sqe_set_data(sqe, &m_ovlp);
+
+        io_uring_submit(ring);
+    }
 
     /// \brief
     ///   C++20 coroutine API. Resume current coroutine and get the async operation result. Do
@@ -633,7 +669,29 @@ public:
     ///   For internal usage. Actual prepare for async timeout event.
     /// \param[in] promise
     ///   Promise of the coroutine to be suspended.
-    ONION_API auto await_suspend(detail::PromiseBase &promise) noexcept -> bool;
+    auto await_suspend(detail::PromiseBase &promise) noexcept -> bool {
+        m_ovlp.promise = &promise;
+
+        // No need to sleep.
+        if (m_timeout.tv_sec == 0 && m_timeout.tv_nsec == 0) [[unlikely]]
+            return false;
+
+        // FIXME: Possible infinite loop.
+        io_uring *ring    = detail::IoContextWorker::current()->uring();
+        io_uring_sqe *sqe = io_uring_get_sqe(ring);
+        while (sqe == nullptr) [[unlikely]] {
+            io_uring_submit(ring);
+            sqe = io_uring_get_sqe(ring);
+        }
+
+        // Seems like that io_uring does not provide a mechanism to wait for timeout event only.
+        io_uring_prep_timeout(sqe, &m_timeout, std::numeric_limits<unsigned>::max(), 0);
+        io_uring_sqe_set_flags(sqe, 0);
+        io_uring_sqe_set_data(sqe, &m_ovlp);
+
+        io_uring_submit(ring);
+        return true;
+    }
 
     /// \brief
     ///   C++20 coroutine API. Resume current coroutine and get result of this sleep operation. Do
@@ -647,10 +705,7 @@ private:
 
     /// \brief
     ///   Timeout struct used for \c io_uring.
-    struct {
-        std::int64_t tv_sec;
-        std::int64_t tv_nsec;
-    } m_timeout;
+    __kernel_timespec m_timeout;
 };
 
 /// \brief

@@ -2,6 +2,9 @@
 
 #include "io_context.hpp"
 
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+
 #include <bit>
 #include <expected>
 
@@ -48,10 +51,10 @@ constexpr auto toHostEndian(T value) noexcept -> T {
 /// \brief
 ///   Socket address family. The enum values are the same as system \c AF_* values.
 enum class SocketAddressFamily : std::uint16_t {
-    Unspecified = 0,
-    Unix        = 1,
-    Internet    = 2,
-    InternetV6  = 10,
+    Unspecified = AF_UNSPEC,
+    Unix        = AF_UNIX,
+    Internet    = AF_INET,
+    InternetV6  = AF_INET6,
 };
 
 /// \class IpAddress
@@ -735,7 +738,29 @@ public:
     /// \retval false
     ///   Data sending succeeded or failed immediately and this coroutine should not be suspended.
     [[nodiscard]]
-    ONION_API auto await_suspend(detail::PromiseBase &promise) noexcept -> bool;
+    auto await_suspend(detail::PromiseBase &promise) noexcept -> bool {
+        m_ovlp.promise = &promise;
+
+        // Schedule the send operation.
+        io_uring *ring    = detail::IoContextWorker::current()->uring();
+        io_uring_sqe *sqe = io_uring_get_sqe(ring);
+        while (sqe == nullptr) [[unlikely]] {
+            int result = io_uring_submit(ring);
+            if (result < 0) [[unlikely]] {
+                m_ovlp.result = result;
+                return false;
+            }
+
+            sqe = io_uring_get_sqe(ring);
+        }
+
+        io_uring_prep_send(sqe, m_socket, m_data, m_size, MSG_NOSIGNAL);
+        io_uring_sqe_set_flags(sqe, 0);
+        io_uring_sqe_set_data(sqe, &m_ovlp);
+
+        io_uring_submit(ring);
+        return true;
+    }
 
     /// \brief
     ///   Get the result of the asynchronous send operation.
@@ -808,7 +833,29 @@ public:
     /// \retval false
     ///   Data receiving succeeded or failed immediately and this coroutine should not be suspended.
     [[nodiscard]]
-    ONION_API auto await_suspend(detail::PromiseBase &promise) noexcept -> bool;
+    auto await_suspend(detail::PromiseBase &promise) noexcept -> bool {
+        m_ovlp.promise = &promise;
+
+        // Schedule the receive operation.
+        io_uring *ring    = detail::IoContextWorker::current()->uring();
+        io_uring_sqe *sqe = io_uring_get_sqe(ring);
+        while (sqe == nullptr) [[unlikely]] {
+            int result = io_uring_submit(ring);
+            if (result < 0) [[unlikely]] {
+                m_ovlp.result = result;
+                return false;
+            }
+
+            sqe = io_uring_get_sqe(ring);
+        }
+
+        io_uring_prep_recv(sqe, m_socket, m_buffer, m_size, 0);
+        io_uring_sqe_set_flags(sqe, 0);
+        io_uring_sqe_set_data(sqe, &m_ovlp);
+
+        io_uring_submit(ring);
+        return true;
+    }
 
     /// \brief
     ///   Get the result of the asynchronous receive operation.
@@ -833,9 +880,9 @@ private:
 /// \brief
 ///   Option for socket shutdown operation.
 enum class ShutdownOption : std::uint8_t {
-    Read  = (1 << 0),
-    Write = (1 << 1),
-    Both  = (Read | Write),
+    Read  = SHUT_RD,
+    Write = SHUT_WR,
+    Both  = SHUT_RDWR,
 };
 
 /// \class TcpStream
@@ -902,7 +949,22 @@ public:
         /// \return
         ///   Error code of the asynchronous connect operation. The error code is 0 if success.
         [[nodiscard]]
-        ONION_API auto await_resume() const noexcept -> std::errc;
+        auto await_resume() const noexcept -> std::errc {
+            if (m_ovlp.result == 0) [[likely]] {
+                if (m_stream->m_socket != detail::InvalidSocket)
+                    ::close(m_stream->m_socket);
+
+                m_stream->m_socket  = m_socket;
+                m_stream->m_address = *m_address;
+
+                return {};
+            }
+
+            if (m_socket != detail::InvalidSocket)
+                ::close(m_socket);
+
+            return static_cast<std::errc>(-m_ovlp.result);
+        }
 
     private:
         detail::Overlapped m_ovlp;
@@ -1015,7 +1077,12 @@ public:
     /// \return
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
-    ONION_API auto setKeepAlive(bool enable) noexcept -> std::errc;
+    auto setKeepAlive(bool enable) noexcept -> std::errc {
+        const int value = enable ? 1 : 0;
+        if (setsockopt(m_socket, SOL_SOCKET, SO_KEEPALIVE, &value, sizeof(value)) == -1)
+            return static_cast<std::errc>(errno);
+        return {};
+    }
 
     /// \brief
     ///   Enable or disable TCP no-delay mechanism of this TCP connection.
@@ -1024,7 +1091,12 @@ public:
     /// \return
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
-    ONION_API auto setNoDelay(bool enable) noexcept -> std::errc;
+    auto setNoDelay(bool enable) noexcept -> std::errc {
+        int value = enable ? 1 : 0;
+        if (setsockopt(m_socket, IPPROTO_TCP, TCP_NODELAY, &value, sizeof(value)) == -1)
+            return static_cast<std::errc>(errno);
+        return {};
+    }
 
     /// \brief
     ///   Shutdown this TCP stream for read, write or both.
@@ -1033,13 +1105,22 @@ public:
     /// \return
     ///   A system error code that indicates the result of the operation. The error code is 0 if
     ///   success.
-    ONION_API auto shutdown(ShutdownOption option) noexcept -> std::errc;
+    auto shutdown(ShutdownOption option) noexcept -> std::errc {
+        if (::shutdown(m_socket, static_cast<int>(option)) == -1) [[unlikely]]
+            return static_cast<std::errc>(errno);
+        return {};
+    }
 
     /// \brief
     ///   Close this TCP connection and release all resources. Closing a \c TcpStream object will
     ///   cause errors for pending IO operations. This method does nothing if this is an empty
     ///   \c TcpStream object.
-    ONION_API auto close() noexcept -> void;
+    auto close() noexcept -> void {
+        if (m_socket != detail::InvalidSocket) {
+            ::close(m_socket);
+            m_socket = detail::InvalidSocket;
+        }
+    }
 
 private:
     int m_socket;
@@ -1109,12 +1190,16 @@ public:
         ///   A \c TcpStream object that represents the new accepted TCP connection. Otherwise,
         ///   return a system error code that represents the IO error.
         [[nodiscard]]
-        ONION_API auto await_resume() const noexcept -> std::expected<TcpStream, std::errc>;
+        auto await_resume() const noexcept -> std::expected<TcpStream, std::errc> {
+            if (m_ovlp.result < 0) [[unlikely]]
+                return std::unexpected{static_cast<std::errc>(-m_ovlp.result)};
+            return std::expected<TcpStream, std::errc>{std::in_place, m_ovlp.result, m_address};
+        }
 
     private:
         detail::Overlapped m_ovlp;
         int m_server;
-        unsigned int m_addrlen;
+        socklen_t m_addrlen;
         InetAddress m_address;
     };
 
@@ -1189,7 +1274,12 @@ public:
     ///   Stop listening and release all resources. Closing a \c TcpListener object will cause
     ///   errors for pending accept operations. This method does nothing if this is an empty
     ///   \c TcpListener object.
-    ONION_API auto close() noexcept -> void;
+    auto close() noexcept -> void {
+        if (m_socket != detail::InvalidSocket) {
+            ::close(m_socket);
+            m_socket = detail::InvalidSocket;
+        }
+    }
 
 private:
     int m_socket;
