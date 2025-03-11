@@ -61,8 +61,6 @@ TEST_CASE("[TcpListener] TCP ping-pong") {
 
         CHECK(stream.setKeepAlive(true) == std::errc{});
         CHECK(stream.setNoDelay(true) == std::errc{});
-        CHECK(stream.setSendTimeout(5s) == std::errc{});
-        CHECK(stream.setReceiveTimeout(5s) == std::errc{});
 
         char buffer[BufferSize]{};
         std::size_t totalSize = 0;

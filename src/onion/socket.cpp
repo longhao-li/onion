@@ -232,28 +232,6 @@ auto TcpStream::close() noexcept -> void {
     }
 }
 
-auto TcpStream::setSendTimeout(std::uint32_t milliseconds) noexcept -> std::errc {
-    const timeval value{
-        .tv_sec  = milliseconds / 1000,
-        .tv_usec = (milliseconds % 1000) * 1000,
-    };
-
-    if (setsockopt(m_socket, SOL_SOCKET, SO_SNDTIMEO, &value, sizeof(value)) == -1) [[unlikely]]
-        return static_cast<std::errc>(errno);
-    return {};
-}
-
-auto TcpStream::setReceiveTimeout(std::uint32_t milliseconds) noexcept -> std::errc {
-    const timeval value{
-        .tv_sec  = milliseconds / 1000,
-        .tv_usec = (milliseconds % 1000) * 1000,
-    };
-
-    if (setsockopt(m_socket, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof(value)) == -1) [[unlikely]]
-        return static_cast<std::errc>(errno);
-    return {};
-}
-
 auto TcpListener::AcceptAwaitable::await_suspend(PromiseBase &promise) noexcept -> bool {
     m_ovlp.promise = &promise;
 

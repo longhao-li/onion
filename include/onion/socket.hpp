@@ -1036,65 +1036,10 @@ public:
     ONION_API auto shutdown(ShutdownOption option) noexcept -> std::errc;
 
     /// \brief
-    ///   Set send timeout of this TCP connection.
-    /// \tparam Rep
-    ///   Type of the duration representation. See C++ reference for more information.
-    /// \tparam Period
-    ///   Period of the duration. See C++ reference for more information.
-    /// \param timeout
-    ///   Timeout duration. Use 0 or negative value for never timeout.
-    /// \return
-    ///   A system error code that indicates the result of the operation. The error code is 0 if
-    ///   success.
-    template <typename Rep, typename Period>
-    auto setSendTimeout(std::chrono::duration<Rep, Period> timeout) noexcept -> std::errc {
-        auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
-        milliseconds      = milliseconds < 0 ? 0 : milliseconds;
-        return this->setSendTimeout(static_cast<std::uint32_t>(milliseconds));
-    }
-
-    /// \brief
-    ///   Set receive timeout of this TCP connection.
-    /// \tparam Rep
-    ///   Type of the duration representation. See C++ reference for more information.
-    /// \tparam Period
-    ///   Period of the duration. See C++ reference for more information.
-    /// \param timeout
-    ///   Timeout duration. Use 0 or negative value for never timeout.
-    /// \return
-    ///   A system error code that indicates the result of the operation. The error code is 0 if
-    ///   success.
-    template <typename Rep, typename Period>
-    auto setReceiveTimeout(std::chrono::duration<Rep, Period> timeout) noexcept -> std::errc {
-        auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(timeout).count();
-        milliseconds      = milliseconds < 0 ? 0 : milliseconds;
-        return this->setReceiveTimeout(static_cast<std::uint32_t>(milliseconds));
-    }
-
-    /// \brief
     ///   Close this TCP connection and release all resources. Closing a \c TcpStream object will
     ///   cause errors for pending IO operations. This method does nothing if this is an empty
     ///   \c TcpStream object.
     ONION_API auto close() noexcept -> void;
-
-private:
-    /// \brief
-    ///   Set send timeout of this TCP connection.
-    /// \param timeout
-    ///   Timeout in milliseconds. Use 0 for never timeout.
-    /// \return
-    ///   A system error code that indicates the result of the operation. The error code is 0 if
-    ///   success.
-    ONION_API auto setSendTimeout(std::uint32_t timeout) noexcept -> std::errc;
-
-    /// \brief
-    ///   Set receive timeout of this TCP connection.
-    /// \param timeout
-    ///   Timeout in milliseconds. Use 0 for never timeout.
-    /// \return
-    ///   A system error code that indicates the result of the operation. The error code is 0 if
-    ///   success.
-    ONION_API auto setReceiveTimeout(std::uint32_t timeout) noexcept -> std::errc;
 
 private:
     int m_socket;
