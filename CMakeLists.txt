@@ -83,7 +83,9 @@ endif()
 
 # Link system libraries. We use io_uring for Linux.
 include(cmake/liburing.cmake)
-target_link_libraries(onion PRIVATE uring::uring)
+include(cmake/llhttp.cmake)
+
+target_link_libraries(onion PRIVATE uring::uring llhttp::llhttp)
 
 # Add install target if this is the root project.
 include(GNUInstallDirs)

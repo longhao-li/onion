@@ -38,7 +38,7 @@ TEST_CASE("[HashMap] Construct with initial capacity") {
     CHECK(mapWithHasher.size() == 0);
     CHECK(mapWithHasher.capacity() >= 2333);
 
-    std::equal_to<std::string> stringEqual;
+    std::equal_to<> stringEqual;
     HashMap<std::string, std::string> mapWithHasherAndEqual{2333, stringHasher, stringEqual};
     CHECK(mapWithHasherAndEqual.begin() == largeMap.end());
     CHECK(mapWithHasherAndEqual.empty());

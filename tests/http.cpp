@@ -5,12 +5,12 @@
 using namespace onion;
 using namespace std::chrono_literals;
 
-TEST_CASE("[HttpHeaders] Date parser") {
+TEST_CASE("[HttpHeader] Date parser") {
     constexpr std::string_view date1{"Sun, 06 Nov 1994 08:49:37 GMT"};
     constexpr std::string_view date2{"Sat,04 Jan 2025 21:48:00 GMT"};
     constexpr std::string_view date3{"Mon, 30    Sep   2024  14:00:00 GMT"};
 
-    HttpHeaders headers;
+    HttpHeader headers;
     headers.add("Date", date1);
     CHECK(headers.contains("Date"));
     CHECK(headers.find("Date")->second == date1);

@@ -1,5 +1,7 @@
 #include "onion/http.hpp"
 
+#include <llhttp.h>
+
 #include <algorithm>
 
 using namespace onion;
@@ -377,17 +379,17 @@ static auto parseHttpDate(const char *first,
     return first;
 }
 
-HttpHeaders::HttpHeaders(const HttpHeaders &other) noexcept = default;
+HttpHeader::HttpHeader(const HttpHeader &other) noexcept = default;
 
-HttpHeaders::HttpHeaders(HttpHeaders &&other) noexcept = default;
+HttpHeader::HttpHeader(HttpHeader &&other) noexcept = default;
 
-HttpHeaders::~HttpHeaders() noexcept = default;
+HttpHeader::~HttpHeader() noexcept = default;
 
-auto HttpHeaders::operator=(const HttpHeaders &other) noexcept -> HttpHeaders & = default;
+auto HttpHeader::operator=(const HttpHeader &other) noexcept -> HttpHeader & = default;
 
-auto HttpHeaders::operator=(HttpHeaders &&other) noexcept -> HttpHeaders & = default;
+auto HttpHeader::operator=(HttpHeader &&other) noexcept -> HttpHeader & = default;
 
-auto HttpHeaders::add(std::string_view key, std::string_view value) noexcept -> void {
+auto HttpHeader::add(std::string_view key, std::string_view value) noexcept -> void {
     auto result = m_headers.try_emplace(key, value);
     if (result.second)
         return;
@@ -399,16 +401,16 @@ auto HttpHeaders::add(std::string_view key, std::string_view value) noexcept -> 
         mapped.assign(value);
 }
 
-auto HttpHeaders::erase(std::string_view key) noexcept -> bool {
+auto HttpHeader::erase(std::string_view key) noexcept -> bool {
     std::size_t count = m_headers.erase(key);
     return count != 0;
 }
 
-auto HttpHeaders::clear() noexcept -> void {
+auto HttpHeader::clear() noexcept -> void {
     m_headers.clear();
 }
 
-auto HttpHeaders::contentLength() const noexcept -> std::optional<std::size_t> {
+auto HttpHeader::contentLength() const noexcept -> std::optional<std::size_t> {
     auto iter = m_headers.find("Content-Length");
     if (iter == m_headers.end())
         return std::nullopt;
@@ -427,7 +429,7 @@ auto HttpHeaders::contentLength() const noexcept -> std::optional<std::size_t> {
     return length;
 }
 
-auto HttpHeaders::setContentLength(std::size_t length) noexcept -> void {
+auto HttpHeader::setContentLength(std::size_t length) noexcept -> void {
     std::size_t size = 0;
     char buffer[21];
 
@@ -440,7 +442,7 @@ auto HttpHeaders::setContentLength(std::size_t length) noexcept -> void {
     m_headers["Content-Length"] = std::string_view{buffer, size};
 }
 
-auto HttpHeaders::date() const noexcept -> std::optional<std::chrono::system_clock::time_point> {
+auto HttpHeader::date() const noexcept -> std::optional<std::chrono::system_clock::time_point> {
     auto iter = m_headers.find("Date");
     if (iter == m_headers.end())
         return std::nullopt;
@@ -455,7 +457,7 @@ auto HttpHeaders::date() const noexcept -> std::optional<std::chrono::system_clo
     return time;
 }
 
-auto HttpHeaders::setDate(std::chrono::system_clock::time_point time) noexcept -> void {
+auto HttpHeader::setDate(std::chrono::system_clock::time_point time) noexcept -> void {
     constexpr const char dayNameList[7][3] = {
         {'S', 'u', 'n'}, {'M', 'o', 'n'}, {'T', 'u', 'e'}, {'W', 'e', 'd'},
         {'T', 'h', 'u'}, {'F', 'r', 'i'}, {'S', 'a', 't'},
@@ -517,11 +519,151 @@ auto HttpHeaders::setDate(std::chrono::system_clock::time_point time) noexcept -
     m_headers["Date"] = timeString;
 }
 
-auto HttpHeaders::isChunked() const noexcept -> bool {
+auto HttpHeader::isChunked() const noexcept -> bool {
     auto iter = m_headers.find("Transfer-Encoding");
     if (iter == m_headers.end())
         return false;
 
     const std::string &value = iter->second;
     return value.contains("chunked");
+}
+
+namespace {
+
+/// \class HttpPathWalker
+/// \brief
+///   Helper class to get all the path segments from the given path.
+class HttpPathWalker {
+public:
+    /// \brief
+    ///   Create a new path walker for the given path string.
+    HttpPathWalker(std::string_view str) noexcept
+        : m_first{str.data()},
+          m_last{str.data()},
+          m_end{str.data() + str.size()} {
+        this->next();
+    }
+
+    /// \brief
+    ///   Checks if the path walker has more segments.
+    /// \retval true
+    ///   The path walker has reached the end of the path.
+    /// \retval false
+    ///   The path walker has more segments.
+    [[nodiscard]]
+    auto isEnd() const noexcept -> bool {
+        return m_first == m_end;
+    }
+
+    /// \brief
+    ///   Move to the next path segment.
+    auto next() noexcept -> void {
+        m_first = m_last;
+        while (m_first < m_end && *m_first == '/') {
+            ++m_first;
+            ++m_last;
+        }
+
+        while (m_last < m_end && *m_last != '/')
+            ++m_last;
+    }
+
+    /// \brief
+    ///   Get current path segment.
+    /// \return
+    ///   Current path segment.
+    [[nodiscard]]
+    auto get() const noexcept -> std::string_view {
+        return std::string_view{m_first, static_cast<std::size_t>(m_last - m_first)};
+    }
+
+private:
+    const char *m_first;
+    const char *m_last;
+    const char *m_end;
+};
+
+} // namespace
+
+HttpRouter::HttpRouter() noexcept : m_nodes{{RadixTreeNode{}}} {}
+
+HttpRouter::~HttpRouter() noexcept = default;
+
+auto HttpRouter::operator=(HttpRouter &&other) noexcept -> HttpRouter & = default;
+
+auto HttpRouter::add(std::string_view path,
+                     std::function<Task<void>(HttpContext &)> &&handler) noexcept -> bool {
+    HttpPathWalker walker{path};
+    RadixTreeNode *node = &m_nodes.front();
+
+    while (!walker.isEnd()) {
+        std::string_view segment = walker.get();
+        walker.next();
+
+        if (segment.starts_with(':')) {
+            if (node->matchAny == nullptr)
+                node->matchAny = &m_nodes.emplace_back(RadixTreeNode{});
+            node = node->matchAny;
+        } else {
+            auto iter = node->next.find(segment);
+            if (iter == node->next.end()) {
+                auto *next = &m_nodes.emplace_back(RadixTreeNode{});
+                node->next.insert({std::string{segment}, next});
+                node = next;
+            } else {
+                node = iter->second;
+            }
+        }
+    }
+
+    if (node->handler || !node->pattern.empty())
+        return false;
+
+    node->pattern.assign(path);
+    node->handler = std::move(handler);
+
+    return true;
+}
+
+auto HttpRouter::match(HttpRequest &request) const noexcept
+    -> const std::function<Task<void>(HttpContext &)> * {
+    HttpPathWalker urlWalker{request.url.path};
+    const RadixTreeNode *node = &m_nodes.front();
+
+    while (!urlWalker.isEnd()) {
+        std::string_view segment = urlWalker.get();
+        urlWalker.next();
+
+        auto iter = node->next.find(segment);
+        if (iter != node->next.end()) {
+            node = iter->second;
+            continue;
+        }
+
+        if (node->matchAny != nullptr) {
+            node = node->matchAny;
+            continue;
+        }
+
+        return nullptr;
+    }
+
+    if (!node->handler)
+        return nullptr;
+
+    urlWalker = HttpPathWalker{request.url.path};
+    HttpPathWalker patternWalker{node->pattern};
+
+    while (!urlWalker.isEnd()) {
+        std::string_view pattern = patternWalker.get();
+        urlWalker.next();
+        patternWalker.next();
+
+        if (pattern.starts_with(':')) {
+            pattern.remove_prefix(1);
+            request.params.try_emplace(pattern, urlWalker.get());
+        }
+    }
+
+    return &node->handler;
 }

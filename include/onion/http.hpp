@@ -1,6 +1,10 @@
 #pragma once
 
 #include "hash.hpp"
+#include "socket.hpp"
+
+#include <deque>
+#include <functional>
 
 namespace onion {
 namespace detail {
@@ -137,10 +141,10 @@ enum class HttpStatus : std::uint16_t {
     NetworkAuthenticationRequired = 511,
 };
 
-/// \class HttpHeaders
+/// \class HttpHeader
 /// \brief
 ///   HTTP header container.
-class HttpHeaders {
+class HttpHeader {
 public:
     using key_type        = std::string;
     using mapped_type     = std::string;
@@ -159,24 +163,24 @@ public:
 
     /// \brief
     ///   Create an empty \c HttpHeaders object.
-    HttpHeaders() noexcept = default;
+    HttpHeader() noexcept = default;
 
     /// \brief
     ///   Copy constructor of \c HttpHeaders.
     /// \param[in] other
     ///   The \c HttpHeaders object to copy from.
-    ONION_API HttpHeaders(const HttpHeaders &other) noexcept;
+    ONION_API HttpHeader(const HttpHeader &other) noexcept;
 
     /// \brief
     ///   Move constructor of \c HttpHeaders.
     /// \param[inout] other
     ///   The \c HttpHeaders object to move from. The moved \c HttpHeaders object will be empty
     ///   after the move.
-    ONION_API HttpHeaders(HttpHeaders &&other) noexcept;
+    ONION_API HttpHeader(HttpHeader &&other) noexcept;
 
     /// \brief
     ///   Destroy the \c HttpHeaders object.
-    ONION_API ~HttpHeaders() noexcept;
+    ONION_API ~HttpHeader() noexcept;
 
     /// \brief
     ///   Copy assignment operator of \c HttpHeaders.
@@ -184,7 +188,7 @@ public:
     ///   The \c HttpHeaders object to copy from.
     /// \return
     ///   Reference to this \c HttpHeaders object.
-    ONION_API auto operator=(const HttpHeaders &other) noexcept -> HttpHeaders &;
+    ONION_API auto operator=(const HttpHeader &other) noexcept -> HttpHeader &;
 
     /// \brief
     ///   Move assignment operator of \c HttpHeaders.
@@ -193,7 +197,7 @@ public:
     ///   after the move.
     /// \return
     ///   Reference to this \c HttpHeaders object.
-    ONION_API auto operator=(HttpHeaders &&other) noexcept -> HttpHeaders &;
+    ONION_API auto operator=(HttpHeader &&other) noexcept -> HttpHeader &;
 
     /// \brief
     ///   Get iterator to the first header of this container.
@@ -389,6 +393,196 @@ private:
     ///   We store headers in a case-insensitive manner. The HTTP standard allows multiple headers
     ///   and we compress them into one element in the hash map with the values separated by comma.
     container_type m_headers;
+};
+
+/// \struct HttpUrl
+/// \brief
+///   Represents a URL.
+struct HttpUrl {
+    /// \brief
+    ///   Scheme of the URL.
+    std::string scheme;
+
+    /// \brief
+    ///   Username of the URL.
+    std::string username;
+
+    /// \brief
+    ///   Password of the URL.
+    std::string password;
+
+    /// \brief
+    ///   Host or Host:Port of the URL.
+    std::string host;
+
+    /// \brief
+    ///   Path of the URL. Relative path may not start with '/'.
+    std::string path;
+
+    /// \brief
+    ///   Query string in URL. Array queries will be stored separately by key directly.
+    HashMap<std::string, std::string> query;
+
+    /// \brief
+    ///   Fragment of the URL without the leading '#'.
+    std::string fragment;
+};
+
+/// \struct HttpRequest
+/// \brief
+///   Represents a HTTP request.
+struct HttpRequest {
+    /// \brief
+    ///   HTTP request method for this request.
+    HttpMethod method;
+
+    /// \brief
+    ///   HTTP version of this request.
+    HttpVersion version;
+
+    /// \brief
+    ///   URL of this request.
+    HttpUrl url;
+
+    /// \brief
+    ///   Path parameters. Path parameters are set by HTTP router. This is different from URL
+    ///   queries.
+    HashMap<std::string, std::string> params;
+
+    /// \brief
+    ///   HTTP header items.
+    HttpHeader header;
+
+    /// \brief
+    ///   HTTP body of this request.
+    std::string body;
+};
+
+/// \struct HttpResponse
+/// \brief
+///   Represents a HTTP response.
+struct HttpResponse {
+    /// \brief
+    ///   HTTP version of this response.
+    HttpVersion version;
+
+    /// \brief
+    ///   HTTP status code of this response.
+    HttpStatus status;
+
+    /// \brief
+    ///   HTTP header items.
+    HttpHeader header;
+
+    /// \brief
+    ///   HTTP body of this response.
+    std::string body;
+};
+
+/// \class HttpServer
+/// \brief
+///   HTTP web server application.
+class HttpServer;
+
+/// \struct HttpContext
+/// \brief
+///   HTTP context for current request.
+struct HttpContext {
+    /// \brief
+    ///   HTTP server for current HTTP session.
+    HttpServer &server;
+
+    /// \brief
+    ///   TCP stream for current HTTP session.
+    TcpStream &connection;
+
+    /// \brief
+    ///   Current HTTP request.
+    HttpRequest request;
+
+    /// \brief
+    ///   The HTTP response to be sent.
+    HttpResponse response;
+};
+
+/// \class HttpRouter
+/// \brief
+///   Router for HTTP requests.
+class HttpRouter {
+public:
+    /// \brief
+    ///   Create an empty router.
+    ONION_API HttpRouter() noexcept;
+
+    /// \brief
+    ///   \c HttpRouter is not copyable.
+    HttpRouter(const HttpRouter &other) = delete;
+
+    /// \brief
+    ///   Move constructor of \c HttpRouter.
+    /// \param[inout] other
+    ///   The \c HttpRouter object to be moved. The moved \c HttpRouter object will be in a valid
+    ///   but undefined state.
+    HttpRouter(HttpRouter &&other) noexcept = default;
+
+    /// \brief
+    ///   Destroy this \c HttpRouter.
+    ONION_API ~HttpRouter() noexcept;
+
+    /// \brief
+    ///   \c HttpRouter is not copyable.
+    auto operator=(const HttpRouter &other) = delete;
+
+    /// \brief
+    ///   Move assignment operator of \c HttpRouter.
+    /// \param[inout] other
+    ///   The \c HttpRouter object to be moved. The moved \c HttpRouter object will be in a valid
+    ///   but undefined state.
+    ONION_API auto operator=(HttpRouter &&other) noexcept -> HttpRouter &;
+
+    /// \brief
+    ///   Try to add a new route rule to this router.
+    /// \param path
+    ///   Path pattern to match. The path pattern may contain placeholders like ":name".
+    /// \param handler
+    ///   Handler function to be called when the path pattern is matched.
+    /// \retval true
+    ///   The route rule is added successfully.
+    /// \retval false
+    ///   There is already a route rule with the same path pattern.
+    ONION_API auto add(std::string_view path,
+                       std::function<Task<void>(HttpContext &)> &&handler) noexcept -> bool;
+
+    /// \brief
+    ///   Try to match a request to a route rule. The router will always try to match exact path
+    ///   rules first instead of placeholder rule. For example, for the given two rules:
+    ///
+    ///   - /user/:name/:age
+    ///   - /user/alice/:age
+    ///
+    ///   If the request path is "/user/alice/20", the router will always match the second rule
+    ///   instead of the first rule.
+    /// \param[inout] request
+    ///   The HTTP request to match routing rule.
+    /// \return
+    ///   Pointer to a handler function that could be used to generate a task to handle the request.
+    ///   If no route rule is matched, return \c nullptr.
+    [[nodiscard]]
+    ONION_API auto match(HttpRequest &request) const noexcept
+        -> const std::function<Task<void>(HttpContext &)> *;
+
+private:
+    /// \struct RadixTreeNode
+    /// \brief
+    ///   Node type for radix tree.
+    struct RadixTreeNode {
+        RadixTreeNode *matchAny;
+        HashMap<std::string, RadixTreeNode *> next;
+        std::string pattern;
+        std::function<Task<void>(HttpContext &)> handler;
+    };
+
+    std::deque<RadixTreeNode> m_nodes;
 };
 
 } // namespace onion

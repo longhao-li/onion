@@ -1602,7 +1602,7 @@ namespace onion {
 template <typename Key,
           typename Mapped,
           typename Hash      = onion::Hash<Key>,
-          typename KeyEqual  = std::equal_to<Key>,
+          typename KeyEqual  = std::equal_to<>,
           typename Allocator = std::allocator<std::pair<Key, Mapped>>>
 class HashMap {
 public:
