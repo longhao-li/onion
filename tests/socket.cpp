@@ -394,7 +394,7 @@ TEST_CASE("[tcp_listener] tcp ping-pong") {
         CHECK(error.value() == 0);
         CHECK(srv.local_address() == address);
 
-        server_ready.store(true, std::memory_order_release);
+        server_ready.store(true, std::memory_order_relaxed);
 
         auto stream = co_await srv.accept();
         CHECK(stream.has_value());
@@ -441,6 +441,73 @@ TEST_CASE("[tcp_listener] tcp ping-pong") {
     ctx.schedule(listener(address));
     ctx.schedule(client(address));
     ctx.run();
+}
+
+TEST_CASE("[udp_socket] udp ping-pong") {
+    constexpr std::size_t packet_count = 1000;
+    constexpr std::size_t packet_size  = 1024;
+    constexpr std::size_t buffer_size  = 1024;
+
+    io_context       context;
+    std::atomic_bool server_ready{false};
+    inet_address     client_address{ipv6_loopback, 23334};
+    inet_address     server_address{ipv6_loopback, 23335};
+
+    auto server = [&]() -> task<> {
+        udp_socket socket;
+
+        auto error = socket.bind(server_address);
+        CHECK(error.value() == 0);
+        CHECK(socket.local_address() == server_address);
+
+        server_ready.store(true, std::memory_order_relaxed);
+
+        inet_address peer;
+        char         buffer[buffer_size];
+
+        for (std::size_t i = 0; i < packet_count; ++i) {
+            auto result = co_await socket.receive(buffer, buffer_size, peer);
+
+            CHECK(result.has_value());
+            CHECK(*result == packet_size);
+            CHECK(peer == client_address);
+
+            result = co_await socket.send(buffer, *result, peer);
+            CHECK(result.has_value());
+            CHECK(*result == packet_size);
+        }
+    };
+
+    auto client = [&]() -> task<> {
+        udp_socket socket;
+
+        auto error = socket.bind(client_address);
+        CHECK(error.value() == 0);
+        CHECK(socket.local_address() == client_address);
+
+        while (!server_ready.load(std::memory_order_acquire))
+            co_await yield();
+
+        error = co_await socket.connect(server_address);
+        CHECK(error.value() == 0);
+
+        char buffer[buffer_size]{};
+        for (std::size_t i = 0; i < packet_count; ++i) {
+            auto result = co_await socket.send(buffer, packet_size);
+            CHECK(result.has_value());
+            CHECK(*result == packet_size);
+
+            result = co_await socket.receive(buffer, buffer_size);
+            CHECK(result.has_value());
+            CHECK(*result == packet_size);
+        }
+
+        context.stop();
+    };
+
+    context.schedule(server());
+    context.schedule(client());
+    context.run();
 }
 
 #if defined(__linux) || defined(__linux__) || defined(__gnu_linux__)

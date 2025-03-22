@@ -401,7 +401,7 @@ private:
         std::uint8_t  u8[16];
         std::uint16_t u16[8];
         std::uint32_t u32[4];
-    } m_addr{};
+    } m_addr{.v6{}};
 };
 
 /// \brief
@@ -611,7 +611,7 @@ private:
     union {
         sockaddr_in  v4;
         sockaddr_in6 v6;
-    } m_addr{};
+    } m_addr{.v6{}};
 };
 
 /// \class send_awaitable
@@ -764,6 +764,226 @@ private:
     socket_t      m_socket;
     void         *m_buffer;
     std::uint32_t m_size;
+};
+
+/// \class send_to_awaitable
+/// \brief
+///   Awaitable object for asynchronous socket data sending to a specific address.
+class send_to_awaitable {
+public:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    /// \brief
+    ///   Create a new \c send_to_awaitable object for asynchronous data sending to a specific address.
+    /// \param socket
+    ///   The socket to send data.
+    /// \param data
+    ///   Pointer to start of data to send.
+    /// \param size
+    ///   Size in byte of data to send.
+    /// \param address
+    ///   The address to send data to.
+    send_to_awaitable(socket_t socket, const void *data, std::uint32_t size, const inet_address &address) noexcept
+        : m_ovlp{},
+          m_socket{socket},
+          m_data{data},
+          m_size{size},
+          m_address{&address} {}
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+    /// \brief
+    ///   Create a new \c send_to_awaitable object for asynchronous data sending to a specific address.
+    /// \param socket
+    ///   The socket to send data.
+    /// \param data
+    ///   Pointer to start of data to send.
+    /// \param size
+    ///   Size in byte of data to send.
+    /// \param address
+    ///   The address to send data to.
+    send_to_awaitable(socket_t socket, const void *data, std::uint32_t size, const inet_address &address) noexcept
+        : m_ovlp{},
+          m_socket{socket},
+          m_io_vector{.iov_base = const_cast<void *>(data), .iov_len = size},
+          m_message{} {
+        this->m_message.msg_name    = const_cast<sockaddr *>(reinterpret_cast<const sockaddr *>(&address));
+        this->m_message.msg_namelen = address.is_ipv4() ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+    }
+#endif
+
+    /// \brief
+    ///   C++20 coroutine API method. Always execute \c await_suspend().
+    /// \return
+    ///   This function always returns \c false.
+    static constexpr auto await_ready() noexcept -> bool {
+        return false;
+    }
+
+    /// \brief
+    ///   Prepare for async send to operation and suspend the coroutine.
+    /// \tparam T
+    ///   Type of promise of current coroutine.
+    /// \param coroutine
+    ///   Current coroutine handle.
+    /// \retval true
+    ///   This coroutine should be suspended and resumed later.
+    /// \retval false
+    ///   This coroutine should not be suspended and should be resumed immediately.
+    template <typename T>
+    auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
+        return this->prepare_overlapped(coroutine.promise());
+    }
+
+    /// \brief
+    ///   Get the result of the asynchronous send to operation.
+    /// \return
+    ///   Number of bytes sent if succeeded. Otherwise, return a system error code that represents the IO error.
+    auto await_resume() noexcept -> std::expected<std::uint32_t, std::error_code> {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        if (this->m_ovlp.error == ERROR_SUCCESS) [[likely]]
+            return this->m_ovlp.bytes;
+        return std::unexpected<std::error_code>{std::in_place, this->m_ovlp.error, std::system_category()};
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+        if (m_ovlp.result >= 0) [[likely]]
+            return static_cast<std::uint32_t>(this->m_ovlp.result);
+        return std::unexpected<std::error_code>{std::in_place, -m_ovlp.result, std::system_category()};
+#endif
+    }
+
+private:
+    /// \brief
+    ///   Prepare for asynchronous data sending and suspend this coroutine.
+    /// \param[in] promise
+    ///   Promise of current coroutine.
+    /// \retval true
+    ///   This coroutine should be suspended and be resumed later when data is sent or failed.
+    /// \retval false
+    ///   Data sending succeeded or failed immediately and this coroutine should not be suspended.
+    ONION_API auto prepare_overlapped(promise_base &promise) noexcept -> bool;
+
+private:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    overlapped_t        m_ovlp;
+    socket_t            m_socket;
+    const void         *m_data;
+    std::uint32_t       m_size;
+    const inet_address *m_address;
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+    overlapped_t m_ovlp;
+    socket_t     m_socket;
+    iovec        m_io_vector;
+    msghdr       m_message;
+#endif
+};
+
+/// \class receive_from_awaitable
+/// \brief
+///   Awaitable object for asynchronous socket data receiving from a specific address.
+class receive_from_awaitable {
+public:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    /// \brief
+    ///   Create a new \c receive_from_awaitable object for asynchronous data receiving from a specific address.
+    /// \param socket
+    ///   The socket to receive data.
+    /// \param[out] buffer
+    ///   Pointer to start of data buffer.
+    /// \param size
+    ///   Size in byte of data buffer.
+    /// \param[out] address
+    ///   The address where the datagram is received from.
+    receive_from_awaitable(socket_t socket, void *buffer, std::uint32_t size, inet_address &address) noexcept
+        : m_ovlp{},
+          m_socket{socket},
+          m_buffer{buffer},
+          m_size{size},
+          m_address{&address},
+          m_flags{},
+          m_addrlen{sizeof(inet_address)} {}
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+    /// \brief
+    ///   Create a new \c receive_from_awaitable object for asynchronous data receiving from a specific address.
+    /// \param socket
+    ///   The socket to receive data.
+    /// \param[out] buffer
+    ///   Pointer to start of data buffer.
+    /// \param size
+    ///   Size in byte of data buffer.
+    /// \param[out] address
+    ///   The address where the datagram is received from.
+    receive_from_awaitable(socket_t socket, void *buffer, std::uint32_t size, inet_address &address) noexcept
+        : m_ovlp{},
+          m_socket{socket},
+          m_io_vector{.iov_base = buffer, .iov_len = size},
+          m_message{} {
+        this->m_message.msg_name    = reinterpret_cast<sockaddr *>(&address);
+        this->m_message.msg_namelen = sizeof(address);
+    }
+#endif
+
+    /// \brief
+    ///   C++20 coroutine API method. Always execute \c await_suspend().
+    /// \return
+    ///   This function always returns \c false.
+    static constexpr auto await_ready() noexcept -> bool {
+        return false;
+    }
+
+    /// \brief
+    ///   Prepare for async receive from operation and suspend the coroutine.
+    /// \tparam T
+    ///   Type of promise of current coroutine.
+    /// \param coroutine
+    ///   Current coroutine handle.
+    /// \retval true
+    ///   This coroutine should be suspended and resumed later.
+    /// \retval false
+    ///   This coroutine should not be suspended and should be resumed immediately.
+    template <typename T>
+    auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
+        return this->prepare_overlapped(coroutine.promise());
+    }
+
+    /// \brief
+    ///   Get the result of the asynchronous receive from operation.
+    /// \return
+    ///   Number of bytes received if succeeded. Otherwise, return a system error code that represents the IO error.
+    auto await_resume() noexcept -> std::expected<std::uint32_t, std::error_code> {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        if (this->m_ovlp.error == ERROR_SUCCESS) [[likely]]
+            return this->m_ovlp.bytes;
+        return std::unexpected<std::error_code>{std::in_place, this->m_ovlp.error, std::system_category()};
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+        if (m_ovlp.result >= 0) [[likely]]
+            return static_cast<std::uint32_t>(this->m_ovlp.result);
+        return std::unexpected<std::error_code>{std::in_place, -m_ovlp.result, std::system_category()};
+#endif
+    }
+
+private:
+    /// \brief
+    ///   Prepare for asynchronous data receiving and suspend this coroutine.
+    /// \param[in] promise
+    ///   Promise of current coroutine.
+    /// \retval true
+    ///   This coroutine should be suspended and be resumed later when data is received or failed.
+    /// \retval false
+    ///   Data receiving succeeded or failed immediately and this coroutine should not be suspended.
+    ONION_API auto prepare_overlapped(promise_base &promise) noexcept -> bool;
+
+private:
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    overlapped_t  m_ovlp;
+    socket_t      m_socket;
+    void         *m_buffer;
+    std::uint32_t m_size;
+    inet_address *m_address;
+    DWORD         m_flags;
+    int           m_addrlen;
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+    overlapped_t m_ovlp;
+    socket_t     m_socket;
+    iovec        m_io_vector;
+    msghdr       m_message;
+#endif
 };
 
 /// \enum shutdown_option
@@ -1278,6 +1498,300 @@ public:
     ///   This \c tcp_listener object is not listening to any TCP address.
     explicit operator bool() const noexcept {
         return m_socket != invalid_socket;
+    }
+
+private:
+    socket_t     m_socket  = invalid_socket;
+    inet_address m_address = {};
+};
+
+/// \class udp_socket
+/// \brief
+///   \c udp_socket is a wrapper class for UDP socket. This class could only be used in \c io_contexts.
+class udp_socket {
+public:
+    /// \class connect_awaitable
+    /// \brief
+    ///   Awaitable object for asynchronous connection establishment. UDP is not connection-oriented, connecting to a
+    ///   remote UDP endpoint is only used to specify the default destination address for sending and receiving
+    ///   datagrams so that the application could use \c send() and \c receive() system calls.
+    class connect_awaitable {
+    public:
+        /// \brief
+        ///   Create a new \c connect_awaitable object for asynchronous connection establishment.
+        /// \param[in] socket
+        ///   The UDP socket to establish connection.
+        /// \param address
+        ///   The peer address to connect to.
+        connect_awaitable(socket_t socket, const inet_address &address) noexcept
+            : m_ovlp{},
+              m_socket{socket},
+              m_address{&address} {}
+
+        /// \brief
+        ///   C++20 coroutine API method. Always execute \c await_suspend().
+        /// \return
+        ///   This function always returns \c false.
+        static constexpr auto await_ready() noexcept -> bool {
+            return false;
+        }
+
+        /// \brief
+        ///   Prepare for async connect operation and suspend the coroutine.
+        /// \tparam T
+        ///   Type of promise of current coroutine.
+        /// \param coroutine
+        ///   Current coroutine handle.
+        /// \retval true
+        ///   This coroutine should be suspended and resumed later.
+        /// \retval false
+        ///   This coroutine should not be suspended and should be resumed immediately.
+        template <typename T>
+        auto await_suspend(std::coroutine_handle<T> coroutine) noexcept -> bool {
+            return this->prepare_overlapped(coroutine.promise());
+        }
+
+        /// \brief
+        ///   Get the result of the asynchronous connect operation.
+        /// \return
+        ///   Error code of the asynchronous connect operation. The error code is 0 if success.
+        auto await_resume() noexcept -> std::error_code {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+            return {this->m_ovlp.error, std::system_category()};
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+            if (m_ovlp.result >= 0) [[likely]]
+                return {};
+            return {static_cast<int>(-m_ovlp.result), std::system_category()};
+#endif
+        }
+
+    private:
+        /// \brief
+        ///   Prepare for asynchronous connection establishment and suspend this coroutine.
+        /// \param[in] promise
+        ///   Promise of current coroutine.
+        /// \retval true
+        ///   This coroutine should be suspended and be resumed later when connection is established or failed.
+        /// \retval false
+        ///   Connection establishment succeeded or failed immediately and this coroutine should not be suspended.
+        ONION_API auto prepare_overlapped(promise_base &promise) noexcept -> bool;
+
+    private:
+        overlapped_t        m_ovlp;
+        socket_t            m_socket;
+        const inet_address *m_address;
+    };
+
+    /// \brief
+    ///   Create an empty \c udp_socket object. Empty \c udp_socket object is not bound to any address.
+    udp_socket() noexcept = default;
+
+    /// \brief
+    ///   Create a new \c udp_socket object and bind to the specified address.
+    /// \param address
+    ///   The address to bind. The address could be either an IPv4 or IPv6 address.
+    /// \throws std::system_error
+    ///   Thrown if failed to bind to the specified address.
+    ONION_API explicit udp_socket(const inet_address &address);
+
+    /// \brief
+    ///   \c udp_socket is not copyable.
+    udp_socket(const udp_socket &other) = delete;
+
+    /// \brief
+    ///   Move constructor of \c udp_socket.
+    /// \param[inout] other
+    ///   The \c udp_socket object to move. The moved \c udp_socket object will be empty.
+    udp_socket(udp_socket &&other) noexcept : m_socket{other.m_socket}, m_address{other.m_address} {
+        other.m_socket = invalid_socket;
+    }
+
+    /// \brief
+    ///   Destroy this UDP socket and release resources.
+    ~udp_socket() noexcept {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        if (this->m_socket != invalid_socket)
+            closesocket(this->m_socket);
+#else
+        if (this->m_socket != invalid_socket)
+            ::close(this->m_socket);
+#endif
+    }
+
+    /// \brief
+    ///   \c udp_socket is not copyable.
+    auto operator=(const udp_socket &other) = delete;
+
+    /// \brief
+    ///   Move assignment operator of \c udp_socket.
+    /// \param[inout] other
+    ///   The \c udp_socket object to move. The moved \c udp_socket object will be empty.
+    /// \return
+    ///   Reference to this \c udp_socket object.
+    auto operator=(udp_socket &&other) noexcept -> udp_socket & {
+        if (this == &other) [[unlikely]]
+            return *this;
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        if (this->m_socket != invalid_socket)
+            closesocket(this->m_socket);
+#else
+        if (this->m_socket != invalid_socket)
+            ::close(this->m_socket);
+#endif
+
+        this->m_socket  = other.m_socket;
+        this->m_address = other.m_address;
+        other.m_socket  = invalid_socket;
+
+        return *this;
+    }
+
+    /// \brief
+    ///   Get local address of this UDP socket. The return value could be random if this \c udp_socket is not bound to
+    ///   any address.
+    /// \return
+    ///   Local address of this UDP socket.
+    [[nodiscard]] auto local_address() const noexcept -> const inet_address & {
+        return this->m_address;
+    }
+
+    /// \brief
+    ///   Bind this UDP socket to the specified address. This method will not affect this \c udp_socket object if failed
+    ///   to bind to the specified address.
+    /// \param[in] address
+    ///   The address to bind. The address could be either an IPv4 or IPv6 address.
+    /// \return
+    ///   A system error code object that represents system error. The error code is 0 if this operation is succeeded.
+    ONION_API auto bind(const inet_address &address) noexcept -> std::error_code;
+
+    /// \brief
+    ///   Connect to the specified peer address asynchronously. This method will suspend this coroutine until the
+    ///   connection is established or any error occurs.
+    /// \note
+    ///   This method behaves differently from \c tcp_stream::connect(). Connecting to a remote UDP endpoint requires
+    ///   manually \c bind() call. This method does not initialize the underlying socket if this object is empty.
+    /// \remarks
+    ///   Connecting to a remote UDP endpoint is only used to specify the default destination address for sending and
+    ///   receiving datagrams. UDP is not connection-oriented, so this method does not establish a connection to the
+    ///   remote UDP endpoint.
+    /// \param address
+    ///   The peer address to connect.
+    /// \return
+    ///   A system error code that indicates the result of the connection operation. The error code is 0 if success.
+    auto connect(const inet_address &address) noexcept -> connect_awaitable {
+        return {this->m_socket, address};
+    }
+
+    /// \brief
+    ///   Send data to the peer UDP endpoint asynchronously. This method will suspend this coroutine until the data is
+    ///   sent or any error occurs.
+    /// \note
+    ///   This method requires a connected UDP socket. Use \c connect() method to connect to a remote UDP endpoint.
+    /// \param data
+    ///   Pointer to start of data to send.
+    /// \param size
+    ///   Size in byte of data to send. Please notice that UDP payload should not exceed 65507 bytes.
+    /// \return
+    ///   Number of bytes sent if succeeded. Otherwise, return a system error code that represents the IO error.
+    auto send(const void *data, std::uint32_t size) noexcept -> send_awaitable {
+        return {this->m_socket, data, size};
+    }
+
+    /// \brief
+    ///   Send data to the specified peer address asynchronously. This method will suspend this coroutine until the data
+    ///   is sent or any error occurs.
+    /// \param data
+    ///   Pointer to start of data to send.
+    /// \param size
+    ///   Size in byte of data to send.  Please notice that UDP payload should not exceed 65507 bytes.
+    /// \param address
+    ///   The peer address to send data to.
+    /// \return
+    ///   Number of bytes sent if succeeded. Otherwise, return a system error code that represents the IO error.
+    auto send(const void *data, std::uint32_t size, const inet_address &address) noexcept -> send_to_awaitable {
+        return {this->m_socket, data, size, address};
+    }
+
+    /// \brief
+    ///   Receive data from the peer UDP endpoint asynchronously. This method will suspend this coroutine until the data
+    ///   is received or any error occurs.
+    /// \note
+    ///   This method requires a connected UDP socket. Use \c connect() method to connect to a remote UDP endpoint.
+    /// \param[out] buffer
+    ///   Pointer to start of buffer to receive data.
+    /// \param size
+    ///   Size in byte of buffer to store the received data. It is guaranteed that UDP payload will not exceed 65507
+    ///   bytes.
+    /// \return
+    ///   Number of bytes received if succeeded. Otherwise, return a system error code that represents the IO error.
+    auto receive(void *buffer, std::uint32_t size) noexcept -> receive_awaitable {
+        return {this->m_socket, buffer, size};
+    }
+
+    /// \brief
+    ///   Receive data from the specified peer address asynchronously. This method will suspend this coroutine until the
+    ///   data is received or any error occurs.
+    /// \param[out] buffer
+    ///   Pointer to start of buffer to receive data.
+    /// \param size
+    ///   Size in byte of buffer to store the received data. It is guaranteed that UDP payload will not exceed 65507
+    ///   bytes.
+    /// \param address
+    ///   The peer address to receive data from.
+    /// \return
+    ///   Number of bytes received if succeeded. Otherwise, return a system error code that represents the IO error.
+    auto receive(void *buffer, std::uint32_t size, inet_address &address) noexcept -> receive_from_awaitable {
+        return {this->m_socket, buffer, size, address};
+    }
+
+    /// \brief
+    ///   Enable or disable broadcast mechanism of this UDP socket.
+    /// \param enable
+    ///   \c true to enable broadcast mechanism. \c false to disable broadcast mechanism.
+    /// \return
+    ///   A system error code that indicates the result of the operation. The error code is 0 if success.
+    auto set_broadcast(bool enable) noexcept -> std::error_code {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        DWORD value  = enable ? 1 : 0;
+        auto *optval = reinterpret_cast<const CHAR *>(&value);
+
+        if (setsockopt(this->m_socket, SOL_SOCKET, SO_BROADCAST, optval, sizeof(value)) == 0) [[likely]]
+            return {};
+        return {WSAGetLastError(), std::system_category()};
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+        const int value = enable ? 1 : 0;
+        if (setsockopt(this->m_socket, SOL_SOCKET, SO_BROADCAST, &value, sizeof(value)) == 0) [[likely]]
+            return {};
+        return {errno, std::system_category()};
+#endif
+    }
+
+    /// \brief
+    ///   Close this UDP socket and release all resources. Closing a \c udp_socket object will cause errors for pending
+    ///   IO operations. This method does nothing if this is an empty \c udp_socket object.
+    auto close() noexcept -> void {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+        if (this->m_socket != invalid_socket) {
+            closesocket(this->m_socket);
+            this->m_socket = invalid_socket;
+        }
+#else
+        if (this->m_socket != invalid_socket) {
+            ::close(this->m_socket);
+            this->m_socket = invalid_socket;
+        }
+#endif
+    }
+
+    /// \brief
+    ///   Checks if this \c udp_socket object is bound to a UDP address.
+    /// \retval true
+    ///   This \c udp_socket object is bound to a UDP address.
+    /// \retval false
+    ///   This \c udp_socket object is not bound to any UDP address.
+    explicit operator bool() const noexcept {
+        return this->m_socket != invalid_socket;
     }
 
 private:

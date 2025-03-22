@@ -274,6 +274,89 @@ auto onion::receive_awaitable::prepare_overlapped(promise_base &promise) noexcep
 #endif
 }
 
+auto onion::send_to_awaitable::prepare_overlapped(promise_base &promise) noexcept -> bool {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    this->m_ovlp.promise = &promise;
+
+    DWORD  bytes = 0;
+    WSABUF buffer{this->m_size, static_cast<CHAR *>(const_cast<void *>(this->m_data))};
+    auto  *address = reinterpret_cast<const sockaddr *>(this->m_address);
+    int    addrlen = (this->m_address->is_ipv4()) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+
+    if (WSASendTo(this->m_socket, &buffer, 1, &bytes, 0, address, addrlen, &this->m_ovlp, nullptr) == 0) {
+        this->m_ovlp.bytes = bytes;
+        return false;
+    }
+
+    int error = WSAGetLastError();
+    if (error == WSA_IO_PENDING) [[likely]]
+        return true;
+
+    this->m_ovlp.error = error;
+    return false;
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+    this->m_ovlp.promise = &promise;
+
+    io_uring     *ring = io_context::current()->uring();
+    io_uring_sqe *sqe  = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        io_uring_submit(ring);
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    this->m_message.msg_iov    = &this->m_io_vector;
+    this->m_message.msg_iovlen = 1;
+
+    io_uring_prep_sendmsg(sqe, this->m_socket, &this->m_message, MSG_NOSIGNAL);
+    io_uring_sqe_set_flags(sqe, 0);
+    io_uring_sqe_set_data(sqe, &this->m_ovlp);
+
+    return true;
+#endif
+}
+
+auto onion::receive_from_awaitable::prepare_overlapped(promise_base &promise) noexcept -> bool {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    this->m_ovlp.promise = &promise;
+    this->m_addrlen      = sizeof(inet_address);
+
+    DWORD  bytes = 0;
+    WSABUF buffer{this->m_size, static_cast<CHAR *>(this->m_buffer)};
+    auto  *address = reinterpret_cast<sockaddr *>(this->m_address);
+
+    if (WSARecvFrom(this->m_socket, &buffer, 1, &bytes, &this->m_flags, address, &this->m_addrlen, &this->m_ovlp,
+                    nullptr) == 0) {
+        this->m_ovlp.bytes = bytes;
+        return false;
+    }
+
+    int error = WSAGetLastError();
+    if (error == WSA_IO_PENDING) [[likely]]
+        return true;
+
+    this->m_ovlp.error = error;
+    return false;
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+    this->m_ovlp.promise = &promise;
+
+    io_uring     *ring = io_context::current()->uring();
+    io_uring_sqe *sqe  = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        io_uring_submit(ring);
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    this->m_message.msg_iov    = &this->m_io_vector;
+    this->m_message.msg_iovlen = 1;
+
+    io_uring_prep_recvmsg(sqe, this->m_socket, &this->m_message, 0);
+    io_uring_sqe_set_flags(sqe, 0);
+    io_uring_sqe_set_data(sqe, &this->m_ovlp);
+
+    return true;
+#endif
+}
+
 auto onion::tcp_stream::connect_awaitable::await_resume() noexcept -> std::error_code {
 #if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
     if (this->m_ovlp.error == ERROR_SUCCESS) [[likely]] {
@@ -647,6 +730,222 @@ auto onion::tcp_listener::listen(const inet_address &address) noexcept -> std::e
 
     // Listen for incoming connections.
     if (::listen(s, SOMAXCONN) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(s);
+        return {error, std::system_category()};
+    }
+
+    if (this->m_socket != invalid_socket)
+        ::close(this->m_socket);
+
+    this->m_socket  = s;
+    this->m_address = address;
+
+    return {};
+#endif
+}
+
+auto onion::udp_socket::connect_awaitable::prepare_overlapped(promise_base &promise) noexcept -> bool {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    this->m_ovlp.promise = &promise;
+
+    auto *address = reinterpret_cast<const sockaddr *>(this->m_address);
+    int   addrlen = (address->sa_family == AF_INET) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+
+    // Try to connect to the peer address.
+    // FIXME: Is this blocking?
+    if (WSAConnect(this->m_socket, address, addrlen, nullptr, nullptr, nullptr, nullptr) == 0) [[likely]] {
+        this->m_ovlp.error = ERROR_SUCCESS;
+        return false;
+    }
+
+    // Connect operation failed.
+    this->m_ovlp.error = WSAGetLastError();
+    return false;
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+    this->m_ovlp.promise = &promise;
+
+    io_uring     *ring = io_context::current()->uring();
+    io_uring_sqe *sqe  = io_uring_get_sqe(ring);
+    while (sqe == nullptr) [[unlikely]] {
+        io_uring_submit(ring);
+        sqe = io_uring_get_sqe(ring);
+    }
+
+    auto     *address = reinterpret_cast<const sockaddr *>(this->m_address);
+    socklen_t addrlen = (address->sa_family == AF_INET) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+
+    io_uring_prep_connect(sqe, this->m_socket, address, addrlen);
+    io_uring_sqe_set_flags(sqe, 0);
+    io_uring_sqe_set_data(sqe, &this->m_ovlp);
+
+    return true;
+#endif
+}
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+onion::udp_socket::udp_socket(const inet_address &address) : m_address{address} {
+    // Create a new socket for the server.
+    auto *addr    = reinterpret_cast<const sockaddr *>(&address);
+    int   addrlen = (address.is_ipv4()) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+
+    this->m_socket = WSASocketW(addr->sa_family, SOCK_DGRAM, IPPROTO_UDP, nullptr, 0, WSA_FLAG_OVERLAPPED);
+    if (this->m_socket == invalid_socket) [[unlikely]]
+        throw std::system_error{WSAGetLastError(), std::system_category(), "Failed to create socket"};
+
+    { // Enable SO_REUSEADDR option.
+        DWORD value  = 1;
+        auto *optval = reinterpret_cast<const CHAR *>(&value);
+        if (setsockopt(this->m_socket, SOL_SOCKET, SO_REUSEADDR, optval, sizeof(value)) == SOCKET_ERROR) [[unlikely]] {
+            int error = WSAGetLastError();
+            closesocket(this->m_socket);
+            throw std::system_error{error, std::system_category(), "Failed to enable SO_REUSEADDR"};
+        }
+    }
+
+    { // Register the socket with IOCP and set the notification modes.
+        HANDLE iocp = io_context::current()->iocp();
+        if (CreateIoCompletionPort(reinterpret_cast<HANDLE>(this->m_socket), iocp, 0, 0) == nullptr) [[unlikely]] {
+            int error = static_cast<int>(GetLastError());
+            closesocket(this->m_socket);
+            throw std::system_error{error, std::system_category(), "Failed to register IOCP"};
+        }
+    }
+
+    { // Set notification mode for this socket.
+        UCHAR mode = FILE_SKIP_SET_EVENT_ON_HANDLE | FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
+        if (SetFileCompletionNotificationModes(reinterpret_cast<HANDLE>(this->m_socket), mode) == FALSE) [[unlikely]] {
+            int error = static_cast<int>(GetLastError());
+            closesocket(this->m_socket);
+            throw std::system_error{error, std::system_category(), "Failed to set notification mode"};
+        }
+    }
+
+    // Bind the socket to the address.
+    if (::bind(this->m_socket, addr, addrlen) == SOCKET_ERROR) [[unlikely]] {
+        int error = WSAGetLastError();
+        closesocket(this->m_socket);
+        throw std::system_error{error, std::system_category(), "Failed to bind socket"};
+    }
+}
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+onion::udp_socket::udp_socket(const inet_address &address) : m_address{address} {
+    // Create a new socket for the server.
+    auto     *addr    = reinterpret_cast<const sockaddr *>(&address);
+    socklen_t addrlen = address.is_ipv4() ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+
+    this->m_socket = ::socket(addr->sa_family, SOCK_DGRAM, IPPROTO_UDP);
+    if (this->m_socket == invalid_socket) [[unlikely]]
+        throw std::system_error{errno, std::system_category(), "Failed to create socket"};
+
+    { // Enable SO_REUSEADDR option.
+        const int value = 1;
+        if (setsockopt(this->m_socket, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) == -1) [[unlikely]] {
+            int error = errno;
+            ::close(this->m_socket);
+            throw std::system_error{error, std::system_category(), "Failed to enable SO_REUSEADDR"};
+        }
+    }
+
+    { // Enable SO_REUSEPORT option.
+        const int value = 1;
+        if (setsockopt(this->m_socket, SOL_SOCKET, SO_REUSEPORT, &value, sizeof(value)) == -1) [[unlikely]] {
+            int error = errno;
+            ::close(this->m_socket);
+            throw std::system_error{error, std::system_category(), "Failed to enable SO_REUSEPORT"};
+        }
+    }
+
+    // Bind the socket to the address.
+    if (::bind(this->m_socket, addr, addrlen) == -1) [[unlikely]] {
+        int error = errno;
+        ::close(this->m_socket);
+        throw std::system_error{error, std::system_category(), "Failed to bind socket"};
+    }
+}
+#endif
+
+auto onion::udp_socket::bind(const inet_address &address) noexcept -> std::error_code {
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    // Create a new socket for the server.
+    auto *addr    = reinterpret_cast<const sockaddr *>(&address);
+    int   addrlen = (address.is_ipv4()) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+
+    socket_t s = WSASocketW(addr->sa_family, SOCK_DGRAM, IPPROTO_UDP, nullptr, 0, WSA_FLAG_OVERLAPPED);
+    if (s == invalid_socket) [[unlikely]]
+        return {WSAGetLastError(), std::system_category()};
+
+    { // Enable SO_REUSEADDR option.
+        DWORD value  = 1;
+        auto *optval = reinterpret_cast<const CHAR *>(&value);
+        if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, optval, sizeof(value)) == SOCKET_ERROR) [[unlikely]] {
+            int error = WSAGetLastError();
+            closesocket(s);
+            return {error, std::system_category()};
+        }
+    }
+
+    { // Register the socket with IOCP and set the notification modes.
+        HANDLE iocp = io_context::current()->iocp();
+        if (CreateIoCompletionPort(reinterpret_cast<HANDLE>(s), iocp, 0, 0) == nullptr) [[unlikely]] {
+            int error = static_cast<int>(GetLastError());
+            closesocket(s);
+            return {error, std::system_category()};
+        }
+    }
+
+    { // Set notification mode for this socket.
+        UCHAR mode = FILE_SKIP_SET_EVENT_ON_HANDLE | FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
+        if (SetFileCompletionNotificationModes(reinterpret_cast<HANDLE>(s), mode) == FALSE) [[unlikely]] {
+            int error = static_cast<int>(GetLastError());
+            closesocket(this->m_socket);
+            return {error, std::system_category()};
+        }
+    }
+
+    // Bind the socket to the address.
+    if (::bind(s, addr, addrlen) == SOCKET_ERROR) [[unlikely]] {
+        int error = WSAGetLastError();
+        closesocket(s);
+        return {error, std::system_category()};
+    }
+
+    if (this->m_socket != invalid_socket)
+        closesocket(this->m_socket);
+
+    this->m_socket  = s;
+    this->m_address = address;
+
+    return {};
+#elif defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
+    // Create a new socket for the server.
+    auto     *addr    = reinterpret_cast<const sockaddr *>(&address);
+    socklen_t addrlen = (address.is_ipv4()) ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+
+    socket_t s = ::socket(addr->sa_family, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == -1) [[unlikely]]
+        return {errno, std::system_category()};
+
+    { // Enable SO_REUSEADDR option.
+        const int value = 1;
+        if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &value, sizeof(value)) == -1) [[unlikely]] {
+            int error = errno;
+            ::close(s);
+            return {error, std::system_category()};
+        }
+    }
+
+    { // Enable SO_REUSEPORT option.
+        const int value = 1;
+        if (setsockopt(s, SOL_SOCKET, SO_REUSEPORT, &value, sizeof(value)) == -1) [[unlikely]] {
+            int error = errno;
+            ::close(s);
+            return {error, std::system_category()};
+        }
+    }
+
+    // Bind the socket to the address.
+    if (::bind(s, addr, addrlen) == -1) [[unlikely]] {
         int error = errno;
         ::close(s);
         return {error, std::system_category()};

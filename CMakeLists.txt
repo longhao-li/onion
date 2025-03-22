@@ -109,7 +109,7 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "Linux")
         message(FATAL_ERROR "liburing not found.")
     endif()
 
-    target_link_libraries(onion PRIVATE uring::uring)
+    target_link_libraries(onion PUBLIC uring::uring)
 endif()
 
 # Add install target.
