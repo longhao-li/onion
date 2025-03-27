@@ -1,8 +1,6 @@
 #pragma once
 
-#include "socket.hpp"
-
-#include <unordered_map>
+#include "hash.hpp"
 
 namespace onion {
 namespace detail {
@@ -221,156 +219,226 @@ struct http_url {
     std::string fragment;
 };
 
-/// \class http_header
+/// \class http_header_map
 /// \brief
 ///   HTTP header map.
-class http_header {
+class http_header_map {
 public:
     using key_type        = std::string;
     using mapped_type     = std::string;
-    using value_type      = std::pair<const key_type, mapped_type>;
+    using value_type      = std::pair<key_type, mapped_type>;
     using size_type       = std::size_t;
     using difference_type = std::ptrdiff_t;
     using hasher          = detail::case_insensitive_hash;
     using key_equal       = detail::case_insensitive_equal;
     using reference       = value_type &;
     using const_reference = const value_type &;
-    using pointer         = typename std::unordered_map<std::string, std::string, hasher, key_equal>::pointer;
-    using const_pointer   = typename std::unordered_map<std::string, std::string, hasher, key_equal>::const_pointer;
-    using iterator        = typename std::unordered_map<std::string, std::string, hasher, key_equal>::iterator;
-    using const_iterator  = typename std::unordered_map<std::string, std::string, hasher, key_equal>::const_iterator;
+    using pointer         = typename unordered_flat_map<std::string, std::string, hasher, key_equal>::pointer;
+    using const_pointer   = typename unordered_flat_map<std::string, std::string, hasher, key_equal>::const_pointer;
+    using iterator        = typename unordered_flat_map<std::string, std::string, hasher, key_equal>::iterator;
+    using const_iterator  = typename unordered_flat_map<std::string, std::string, hasher, key_equal>::const_iterator;
 
     /// \brief
-    ///   Create an empty \c http_header map.
-    http_header() noexcept = default;
+    ///   Create an empty \c http_header_map.
+    http_header_map() noexcept = default;
 
     /// \brief
-    ///   Copy construct of \c http_header map.
+    ///   Copy construct of \c http_header_map.
     /// \param other
-    ///   The \c http_header map to copy from.
-    http_header(const http_header &other) = default;
+    ///   The \c http_header_map to copy from.
+    http_header_map(const http_header_map &other) = default;
 
     /// \brief
-    ///   Move construct an \c http_header map.
+    ///   Move construct an \c http_header_map.
     /// \param[inout] other
-    ///   The \c http_header map to move. The moved \c http_header map is left in a valid but unspecified state.
-    http_header(http_header &&other) noexcept = default;
+    ///   The \c http_header_map to move. The moved \c http_header_map is left in a valid but unspecified state.
+    http_header_map(http_header_map &&other) noexcept = default;
 
     /// \brief
-    ///   Destroy this \c http_header map.
-    ~http_header() noexcept = default;
+    ///   Destroy this \c http_header_map.
+    ~http_header_map() noexcept = default;
 
     /// \brief
-    ///   Copy assignment of \c http_header map.
+    ///   Copy assignment of \c http_header_map.
     /// \param other
-    ///   The \c http_header map to copy from.
+    ///   The \c http_header_map to copy from.
     /// \return
-    ///   Reference to this \c http_header map.
-    auto operator=(const http_header &other) -> http_header & = default;
+    ///   Reference to this \c http_header_map.
+    auto operator=(const http_header_map &other) -> http_header_map & = default;
 
     /// \brief
-    ///   Move assignment of \c http_header map.
+    ///   Move assignment of \c http_header_map.
     /// \param[inout] other
-    ///   The \c http_header map to move. The moved \c http_header map is left in a valid but unspecified state.
+    ///   The \c http_header_map to move. The moved \c http_header_map is left in a valid but unspecified state.
     /// \return
-    ///   Reference to this \c http_header map.
-    auto operator=(http_header &&other) noexcept -> http_header & = default;
+    ///   Reference to this \c http_header_map.
+    auto operator=(http_header_map &&other) noexcept -> http_header_map & = default;
 
     /// \brief
-    ///   Get iterator to the first element of the \c http_header map.
+    ///   Get iterator to the first element of the \c http_header_map.
     /// \return
-    ///   Iterator to the first element of the \c http_header map.
+    ///   Iterator to the first element of the \c http_header_map.
     [[nodiscard]] auto begin() noexcept -> iterator {
         return this->m_headers.begin();
     }
 
     /// \brief
-    ///   Get iterator to the first element of the \c http_header map.
+    ///   Get iterator to the first element of the \c http_header_map.
     /// \return
-    ///   Iterator to the first element of the \c http_header map.
+    ///   Iterator to the first element of the \c http_header_map.
     [[nodiscard]] auto begin() const noexcept -> const_iterator {
         return this->m_headers.begin();
     }
 
     /// \brief
-    ///   Get iterator to the first element of the \c http_header map.
+    ///   Get iterator to the first element of the \c http_header_map.
     /// \return
-    ///   Iterator to the first element of the \c http_header map.
+    ///   Iterator to the first element of the \c http_header_map.
     [[nodiscard]] auto cbegin() const noexcept -> const_iterator {
         return this->m_headers.cbegin();
     }
 
     /// \brief
-    ///   Get iterator to the place after the last element in this \c http_header map.
+    ///   Get iterator to the place after the last element in this \c http_header_map.
     /// \return
-    ///   Iterator to the place after the last element in this \c http_header map.
+    ///   Iterator to the place after the last element in this \c http_header_map.
     [[nodiscard]] auto end() noexcept -> iterator {
         return this->m_headers.end();
     }
 
     /// \brief
-    ///   Get iterator to the place after the last element in this \c http_header map.
+    ///   Get iterator to the place after the last element in this \c http_header_map.
     /// \return
-    ///   Iterator to the place after the last element in this \c http_header map.
+    ///   Iterator to the place after the last element in this \c http_header_map.
     [[nodiscard]] auto end() const noexcept -> const_iterator {
         return this->m_headers.end();
     }
 
     /// \brief
-    ///   Get iterator to the place after the last element in this \c http_header map.
+    ///   Get iterator to the place after the last element in this \c http_header_map.
     /// \return
-    ///   Iterator to the place after the last element in this \c http_header map.
+    ///   Iterator to the place after the last element in this \c http_header_map.
     [[nodiscard]] auto cend() const noexcept -> const_iterator {
         return this->m_headers.cend();
     }
 
     /// \brief
-    ///   Checks if this \c http_header map is empty.
+    ///   Checks if this \c http_header_map is empty.
     /// \retval true
-    ///   This \c http_header map is empty.
+    ///   This \c http_header_map is empty.
     /// \retval false
-    ///   This \c http_header map is not empty.
+    ///   This \c http_header_map is not empty.
     [[nodiscard]] auto empty() const noexcept -> bool {
         return this->m_headers.empty();
     }
 
     /// \brief
-    ///   Get number of HTTP header items in this \c http_header map. Please notice that HTTP allows multiple header
+    ///   Get number of HTTP header items in this \c http_header_map. Please notice that HTTP allows multiple header
     ///   items with the same key and they are counted separately.
     /// \return
-    ///   Number of HTTP header items in this \c http_header map.
+    ///   Number of HTTP header items in this \c http_header_map.
     [[nodiscard]] auto size() const noexcept -> size_type {
         return this->m_headers.size();
     }
 
     /// \brief
-    ///   Clear all HTTP headers in this \c http_header map.
+    ///   Clear all HTTP headers in this \c http_header_map.
     auto clear() noexcept -> void {
         this->m_headers.clear();
     }
 
     /// \brief
-    ///   Insert a new HTTP header item into this HTTP header map.
+    ///   Add a new HTTP header item into this \c http_header_map. We do not use multimap and the value will be appended
+    ///   to the existing value with a comma seperated if the key already exists.
+    /// \param key
+    ///   The HTTP header key to be inserted. Do not escape the key value before inserting.
+    /// \param value
+    ///   The HTTP header value to be inserted.  Do not escape the header value before inserting.
+    ONION_API auto add(std::string_view key, std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Remove all HTTP header items with the given key from this \c http_header_map.
+    /// \param key
+    ///   The HTTP header key to be removed. Do not escape the key value before removing.
     /// \return
-    ///   Iterator to the newly added HTTP header item.
-    auto insert(std::string key, std::string value) noexcept -> iterator {
-        return this->m_headers.emplace(std::move(key), std::move(value));
+    ///   The number of HTTP header items removed.
+    auto remove(std::string_view key) noexcept -> size_type {
+        return this->m_headers.erase(key);
     }
 
     /// \brief
-    ///   Remove all HTTP header items with the specified key.
+    ///   Checks if this \c http_header_map contains the given key.
     /// \param key
-    ///   Key of HTTP header items to be removed.
-    /// \return
-    ///   Number of HTTP header items removed from this \c http_header map.
-    auto erase(const std::string &key) noexcept -> size_type {
-        return this->m_headers.erase(key);
+    ///   The HTTP header key to be checked. Do not escape the key value before checking.
+    /// \retval true
+    ///   This \c http_header_map contains the given key.
+    /// \retval false
+    ///   This \c http_header_map does not contain the given key.
+    [[nodiscard]] auto contains(std::string_view key) const noexcept -> bool {
+        return this->m_headers.contains(key);
     }
+
+    /// \brief
+    ///   Get the value of the HTTP header item with the given key.
+    /// \param key
+    ///   The HTTP header key to be checked. Do not escape the key value before checking.
+    /// \return
+    ///   Iterator to the value of the HTTP header item with the given key. If the key does not exist, \c end() will be
+    ///   returned.
+    [[nodiscard]] auto find(std::string_view key) noexcept -> iterator {
+        return this->m_headers.find(key);
+    }
+
+    /// \brief
+    ///   Get the value of the HTTP header item with the given key.
+    /// \param key
+    ///   The HTTP header key to be checked. Do not escape the key value before checking.
+    /// \return
+    ///   Iterator to the value of the HTTP header item with the given key. If the key does not exist, \c end() will be
+    ///   returned.
+    [[nodiscard]] auto find(std::string_view key) const noexcept -> const_iterator {
+        return this->m_headers.find(key);
+    }
+
+    /// \brief
+    ///   Get the value of the HTTP header item with the given key.
+    /// \param key
+    ///   The HTTP header key to be checked. Do not escape the key value before checking.
+    /// \return
+    ///   Reference to the value of the HTTP header item with the given key. If the key does not exist, an empty string
+    ///   will be returned.
+    [[nodiscard]] auto operator[](std::string_view key) noexcept -> mapped_type & {
+        return this->m_headers[key];
+    }
+
+    /// \brief
+    ///   Get HTTP Content-Length header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Content-Length header value. If the header does not exist, return \c std::nullopt.
+    ONION_API auto content_length() const noexcept -> std::optional<std::uint64_t>;
+
+    /// \brief
+    ///   Set content length for this HTTP header. The original content length header will be covered.
+    /// \param value
+    ///   The content length to be set.
+    ONION_API auto set_content_length(std::uint64_t value) noexcept -> void;
+
+    /// \brief
+    ///   Get the date of the HTTP header item with the given key.
+    /// \return
+    ///   UTC timepoint that represents the HTTP date header. If the header does not exist, return \c std::nullopt.
+    ONION_API auto date() const noexcept -> std::optional<std::chrono::system_clock::time_point>;
+
+    /// \brief
+    ///   Set date for this HTTP header. The original date header will be covered.
+    /// \param value
+    ///   The date to be set.
+    ONION_API auto set_date(std::chrono::system_clock::time_point value) noexcept -> void;
 
 private:
     /// \brief
     ///   Generic container for HTTP headers.
-    std::unordered_multimap<std::string, std::string, hasher, key_equal> m_headers;
+    unordered_flat_map<std::string, std::string, hasher, key_equal> m_headers;
 };
 
 } // namespace onion

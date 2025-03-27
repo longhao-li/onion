@@ -1511,7 +1511,7 @@ public:
         if (!result.second)
             allocator_traits::destroy(origin_alloc, result.first.m_value);
         allocator_traits::construct(origin_alloc, result.first.m_value, std::piecewise_construct,
-                                    std::forward_as_tuple(std::forward<K>(value)),
+                                    std::forward_as_tuple(std::forward<K>(key)),
                                     std::forward_as_tuple(std::forward<M>(value)));
 
         return result;
@@ -1639,7 +1639,8 @@ public:
             const auto empty_before = hash_table_mask_empty_slots(hash_table_load_states(storage.states + before));
 
             return (empty_before != 0 && empty_after != 0 &&
-                    std::countr_zero(empty_after) + std::countl_zero(empty_before) < hash_table_group_width);
+                    std::countr_zero(empty_after) + std::countl_zero(empty_before) <
+                        static_cast<int>(hash_table_group_width));
         };
 
         if (group_never_full()) {
@@ -2372,7 +2373,6 @@ auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::find_key
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
 auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::drop_deleted() noexcept -> void {
     hasher    &hash    = this->m_internal.template get<1>();
-    key_equal &equal   = this->m_internal.template get<2>();
     storage_t &storage = this->m_internal.template get<3>();
 
     // Marks that there is no deleted node any more.
