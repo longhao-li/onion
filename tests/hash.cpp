@@ -1,9 +1,9 @@
 #include "onion/hash.hpp"
 
+#include <doctest/doctest.h>
+
 #include <set>
 #include <vector>
-
-#include <doctest/doctest.h>
 
 using namespace onion;
 
@@ -220,8 +220,8 @@ TEST_CASE("[unordered_flat_map] find, insert and erase string") {
     auto result = map.insert(std::make_pair<std::string, int>(std::string(str1), 1));
     CHECK(result.second);
     CHECK(result.first != map.end());
-    CHECK((*result.first).first == str1);
-    CHECK((*result.first).second == 1);
+    CHECK(((*result.first).first == str1));
+    CHECK(((*result.first).second == 1));
     CHECK(map.begin() == result.first);
     CHECK(map.begin() != map.end());
     CHECK(map.cbegin() != map.cend());
@@ -245,7 +245,7 @@ TEST_CASE("[unordered_flat_map] find, insert and erase string") {
     CHECK(map.empty());
 
     for (std::size_t i = 0; i < 100000; ++i) {
-        auto result = map.emplace(str2 + std::to_string(i), i);
+        auto result = map.emplace(str2 + std::to_string(i), static_cast<int>(i));
         CHECK(result.second);
     }
 
@@ -261,7 +261,7 @@ TEST_CASE("[unordered_flat_map] find, insert and erase string") {
     }
 
     for (std::size_t i = 0; i < 10000; ++i) {
-        auto result = map.emplace(str2 + std::to_string(i), i);
+        auto result = map.emplace(str2 + std::to_string(i), static_cast<int>(i));
         CHECK(result.second);
     }
 
