@@ -210,6 +210,22 @@ auto onion::http_header_map::add(std::string_view name, std::string_view value) 
     }
 }
 
+auto onion::http_header_map::set_authorization(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Authorization", value);
+}
+
+auto onion::http_header_map::set_cache_control(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Cache-Control", value);
+}
+
+auto onion::http_header_map::set_connection(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Connection", value);
+}
+
+auto onion::http_header_map::set_content_encoding(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Content-Encoding", value);
+}
+
 auto onion::http_header_map::content_length() const noexcept -> std::optional<std::uint64_t> {
     auto iter = this->m_headers.find("Content-Length");
     if (iter == this->m_headers.end())
@@ -236,6 +252,10 @@ auto onion::http_header_map::set_content_length(std::uint64_t value) noexcept ->
     std::reverse(buffer, buffer + length);
 
     this->m_headers.insert_or_assign("Content-Length", std::string_view{buffer, length});
+}
+
+auto onion::http_header_map::set_content_type(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Content-Type", value);
 }
 
 auto onion::http_header_map::date() const noexcept -> std::optional<std::chrono::system_clock::time_point> {
@@ -372,4 +392,164 @@ auto onion::http_header_map::set_date(std::chrono::system_clock::time_point valu
     buffer[28] = 'T';
 
     this->m_headers.insert_or_assign("Date", std::string_view{buffer, 29});
+}
+
+auto onion::http_header_map::expires() const noexcept -> std::optional<std::chrono::system_clock::time_point> {
+    auto iter = this->m_headers.find("Expires");
+    if (iter == this->m_headers.end())
+        return std::nullopt;
+
+    std::string_view value = iter->second;
+    if (value.size() < 29) [[unlikely]]
+        return std::nullopt;
+
+    // Parse day.
+    std::uint16_t day = (value[5] - '0') * 10 + (value[6] - '0');
+    if (day < 1 || day > 31) [[unlikely]]
+        return std::nullopt;
+
+    // Parse month.
+    std::uint16_t month = 0;
+    switch (value[8]) {
+    case 'J':
+        switch (value[9]) {
+        case 'a': month = 1; break;
+        case 'u':
+            switch (value[10]) {
+            case 'n': month = 6; break;
+            case 'l': month = 7; break;
+            default:  return std::nullopt;
+            }
+            break;
+        default: return std::nullopt;
+        }
+        break;
+    case 'F': month = 2; break;
+    case 'M':
+        switch (value[10]) {
+        case 'r': month = 3; break;
+        case 'y': month = 5; break;
+        default:  return std::nullopt;
+        }
+        break;
+    case 'A':
+        switch (value[9]) {
+        case 'p': month = 4; break;
+        case 'u': month = 8; break;
+        default:  return std::nullopt;
+        }
+        break;
+    case 'S': month = 9; break;
+    case 'O': month = 10; break;
+    case 'N': month = 11; break;
+    case 'D': month = 12; break;
+    default:  return std::nullopt;
+    }
+
+    // Parse year.
+    std::uint16_t year =
+        (value[12] - '0') * 1000 + (value[13] - '0') * 100 + (value[14] - '0') * 10 + (value[15] - '0');
+    if (year < 1900) [[unlikely]]
+        return std::nullopt;
+
+    // Parse hour.
+    std::uint16_t hour = (value[17] - '0') * 10 + (value[18] - '0');
+    if (hour > 23) [[unlikely]]
+        return std::nullopt;
+
+    // Parse minute.
+    std::uint16_t minute = (value[20] - '0') * 10 + (value[21] - '0');
+    if (minute > 59) [[unlikely]]
+        return std::nullopt;
+
+    // Parse second.
+    std::uint16_t second = (value[23] - '0') * 10 + (value[24] - '0');
+    if (second > 59) [[unlikely]]
+        return std::nullopt;
+
+    // GMT.
+    if (value[25] != ' ' || value[26] != 'G' || value[27] != 'M' || value[28] != 'T') [[unlikely]]
+        return std::nullopt;
+
+    std::chrono::year_month_day ymd{std::chrono::year{year}, std::chrono::month{month}, std::chrono::day{day}};
+    return std::chrono::sys_days{ymd} + std::chrono::hours{hour} + std::chrono::minutes{minute} +
+           std::chrono::seconds{second};
+}
+
+auto onion::http_header_map::set_expires(std::chrono::system_clock::time_point value) noexcept -> void {
+    constexpr std::string_view weekdays[7] = {
+        "Sun,", "Mon,", "Tue,", "Wed,", "Thu,", "Fri,", "Sat,",
+    };
+
+    constexpr std::string_view months[12] = {
+        "Jan ", "Feb ", "Mar ", "Apr ", "May ", "Jun ", "Jul ", "Aug ", "Sep ", "Oct ", "Nov ", "Dec ",
+    };
+
+    std::time_t time = std::chrono::system_clock::to_time_t(value);
+    struct tm   tm;
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    ::gmtime_s(&tm, &time);
+#else
+    ::gmtime_r(&time, &tm);
+#endif
+
+    tm.tm_year += 1900;
+    char buffer[30];
+
+    buffer[0]  = weekdays[tm.tm_wday][0];
+    buffer[1]  = weekdays[tm.tm_wday][1];
+    buffer[2]  = weekdays[tm.tm_wday][2];
+    buffer[3]  = weekdays[tm.tm_wday][3];
+    buffer[4]  = ' ';
+    buffer[5]  = '0' + (tm.tm_mday / 10);
+    buffer[6]  = '0' + (tm.tm_mday % 10);
+    buffer[7]  = ' ';
+    buffer[8]  = months[tm.tm_mon][0];
+    buffer[9]  = months[tm.tm_mon][1];
+    buffer[10] = months[tm.tm_mon][2];
+    buffer[11] = months[tm.tm_mon][3];
+    buffer[12] = '0' + (tm.tm_year / 1000);
+    buffer[13] = '0' + ((tm.tm_year / 100) % 10);
+    buffer[14] = '0' + ((tm.tm_year / 10) % 10);
+    buffer[15] = '0' + (tm.tm_year % 10);
+    buffer[16] = ' ';
+    buffer[17] = '0' + (tm.tm_hour / 10);
+    buffer[18] = '0' + (tm.tm_hour % 10);
+    buffer[19] = ':';
+    buffer[20] = '0' + (tm.tm_min / 10);
+    buffer[21] = '0' + (tm.tm_min % 10);
+    buffer[22] = ':';
+    buffer[23] = '0' + (tm.tm_sec / 10);
+    buffer[24] = '0' + (tm.tm_sec % 10);
+    buffer[25] = ' ';
+    buffer[26] = 'G';
+    buffer[27] = 'M';
+    buffer[28] = 'T';
+
+    this->m_headers.insert_or_assign("Expires", std::string_view{buffer, 29});
+}
+
+auto onion::http_header_map::set_keep_alive(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Keep-Alive", value);
+}
+
+auto onion::http_header_map::set_transfer_encoding(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Transfer-Encoding", value);
+}
+
+auto onion::http_header_map::set_host(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Host", value);
+}
+
+auto onion::http_header_map::set_user_agent(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("User-Agent", value);
+}
+
+auto onion::http_header_map::set_referer(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Referer", value);
+}
+
+auto onion::http_header_map::set_upgrade(std::string_view value) noexcept -> void {
+    this->m_headers.insert_or_assign("Upgrade", value);
 }

@@ -208,19 +208,6 @@ enum http_status : std::int32_t {
     }
 }
 
-/// \struct http_url
-/// \brief
-///   HTTP URL structure.
-struct http_url {
-    std::string schema;
-    std::string username;
-    std::string password;
-    std::string host;
-    std::string path;
-    std::string query;
-    std::string fragment;
-};
-
 /// \class http_header_map
 /// \brief
 ///   HTTP header map.
@@ -403,27 +390,96 @@ public:
     }
 
     /// \brief
-    ///   Get the value of the HTTP header item with the given key.
-    /// \param key
-    ///   The HTTP header key to be checked. Do not escape the key value before checking.
+    ///   Get HTTP Authorization header value from this \c http_header_map.
     /// \return
-    ///   Reference to the value of the HTTP header item with the given key. If the key does not exist, an empty string
-    ///   will be returned.
-    [[nodiscard]] auto operator[](std::string_view key) noexcept -> mapped_type & {
-        return this->m_headers[key];
+    ///   HTTP Authorization header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto authorization() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Authorization"); it != this->m_headers.end())
+            return it->second;
+        return {};
     }
+
+    /// \brief
+    ///   Set authorization for this HTTP header. The original authorization header will be covered.
+    /// \param value
+    ///   The authorization to be set.
+    ONION_API auto set_authorization(std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP Content-Encoding header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Content-Encoding header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto content_encoding() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Content-Encoding"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set content encoding for this HTTP header. The original content encoding header will be covered.
+    /// \param value
+    ///   The content encoding to be set.
+    ONION_API auto set_content_encoding(std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP Cache-Control header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Cache-Control header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto cache_control() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Cache-Control"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set cache control for this HTTP header. The original cache control header will be covered.
+    /// \param value
+    ///   The cache control to be set.
+    ONION_API auto set_cache_control(std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP Connection header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Connection header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto connection() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Connection"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set connection for this HTTP header. The original connection header will be covered.
+    /// \param value
+    ///   The connection to be set.
+    ONION_API auto set_connection(std::string_view value) noexcept -> void;
 
     /// \brief
     ///   Get HTTP Content-Length header value from this \c http_header_map.
     /// \return
     ///   HTTP Content-Length header value. If the header does not exist, return \c std::nullopt.
-    ONION_API auto content_length() const noexcept -> std::optional<std::uint64_t>;
+    [[nodiscard]] ONION_API auto content_length() const noexcept -> std::optional<std::uint64_t>;
 
     /// \brief
     ///   Set content length for this HTTP header. The original content length header will be covered.
     /// \param value
     ///   The content length to be set.
     ONION_API auto set_content_length(std::uint64_t value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP Content-Type header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Content-Type header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto content_type() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Content-Type"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set content type for this HTTP header. The original content type header will be covered.
+    /// \param value
+    ///   The content type to be set.
+    ONION_API auto set_content_type(std::string_view value) noexcept -> void;
 
     /// \brief
     ///   Get the date of the HTTP header item with the given key.
@@ -437,10 +493,167 @@ public:
     ///   The date to be set.
     ONION_API auto set_date(std::chrono::system_clock::time_point value) noexcept -> void;
 
+    /// \brief
+    ///   Get HTTP Expires header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Expires header value. If the header does not exist, return \c std::nullopt.
+    [[nodiscard]] ONION_API auto expires() const noexcept -> std::optional<std::chrono::system_clock::time_point>;
+
+    /// \brief
+    ///   Set expires for this HTTP header. The original expires header will be covered.
+    /// \param value
+    ///   The expires to be set.
+    ONION_API auto set_expires(std::chrono::system_clock::time_point value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP Keep-Alive header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Keep-Alive header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto keep_alive() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Keep-Alive"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set HTTP Keep-Alive header value for this \c http_header_map. The original Keep-Alive header will be covered.
+    /// \param value
+    ///   The Keep-Alive value to be set.
+    ONION_API auto set_keep_alive(std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP Transfer-Encoding header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Transfer-Encoding header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto transfer_encoding() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Transfer-Encoding"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set HTTP Transfer-Encoding header value for this \c http_header_map. The original Transfer-Encoding header
+    ///   will be covered.
+    /// \param value
+    ///   The Transfer-Encoding value to be set.
+    ONION_API auto set_transfer_encoding(std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP Host header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Host header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto host() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Host"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set HTTP Host header value for this \c http_header_map. The original Host header will be covered.
+    /// \param value
+    ///   The Host value to be set.
+    ONION_API auto set_host(std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP User-Agent header value from this \c http_header_map.
+    /// \return
+    ///   HTTP User-Agent header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto user_agent() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("User-Agent"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set HTTP User-Agent header value for this \c http_header_map. The original User-Agent header will be covered.
+    /// \param value
+    ///   The User-Agent value to be set.
+    ONION_API auto set_user_agent(std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP Referer header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Referer header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto referer() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Referer"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set HTTP Referer header value for this \c http_header_map. The original Referer header will be covered.
+    /// \param value
+    ///   The Referer value to be set.
+    ONION_API auto set_referer(std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Get HTTP Upgrade header value from this \c http_header_map.
+    /// \return
+    ///   HTTP Upgrade header value. If the header does not exist, return empty string.
+    [[nodiscard]] auto upgrade() const noexcept -> std::string_view {
+        if (auto it = this->m_headers.find("Upgrade"); it != this->m_headers.end())
+            return it->second;
+        return {};
+    }
+
+    /// \brief
+    ///   Set HTTP Upgrade header value for this \c http_header_map. The original Upgrade header will be covered.
+    /// \param value
+    ///   The Upgrade value to be set.
+    ONION_API auto set_upgrade(std::string_view value) noexcept -> void;
+
+    /// \brief
+    ///   Get the value of the HTTP header item with the given key.
+    /// \param key
+    ///   The HTTP header key to be checked. Do not escape the key value before checking.
+    /// \return
+    ///   Reference to the value of the HTTP header item with the given key. If the key does not exist, an empty string
+    ///   will be returned.
+    [[nodiscard]] auto operator[](std::string_view key) noexcept -> mapped_type & {
+        return this->m_headers[key];
+    }
+
 private:
     /// \brief
     ///   Generic container for HTTP headers.
     unordered_flat_map<std::string, std::string, hasher, key_equal> m_headers;
+};
+
+/// \struct http_request
+/// \brief
+///   HTTP request structure.
+struct http_request {
+    /// \brief
+    ///   HTTP request method.
+    http_method method;
+
+    /// \brief
+    ///   HTTP request version.
+    http_version version;
+
+    /// \brief
+    ///   The full HTTP request URI. The URI string is already unescaped.
+    std::string uri;
+
+    /// \brief
+    ///   HTTP request path in URI. The path string is already unescaped.
+    std::string path;
+
+    /// \brief
+    ///   HTTP parameters in route path. The parameter value strings are already unescaped.
+    unordered_flat_map<std::string, std::string> params;
+
+    /// \brief
+    ///   Queries in HTTP request URI. The query key and value strings are already unescaped.
+    unordered_flat_map<std::string, std::string> queries;
+
+    /// \brief
+    ///   HTTP request headers.
+    http_header_map headers;
+
+    /// \brief
+    ///   HTTP request body.
+    std::string body;
 };
 
 } // namespace onion
