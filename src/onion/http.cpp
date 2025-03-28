@@ -321,6 +321,14 @@ auto onion::http_header_map::date() const noexcept -> std::optional<std::chrono:
 }
 
 auto onion::http_header_map::set_date(std::chrono::system_clock::time_point value) noexcept -> void {
+    constexpr std::string_view weekdays[7] = {
+        "Sun,", "Mon,", "Tue,", "Wed,", "Thu,", "Fri,", "Sat,",
+    };
+
+    constexpr std::string_view months[12] = {
+        "Jan ", "Feb ", "Mar ", "Apr ", "May ", "Jun ", "Jul ", "Aug ", "Sep ", "Oct ", "Nov ", "Dec ",
+    };
+
     std::time_t time = std::chrono::system_clock::to_time_t(value);
     struct tm   tm;
 
@@ -330,8 +338,38 @@ auto onion::http_header_map::set_date(std::chrono::system_clock::time_point valu
     ::gmtime_r(&time, &tm);
 #endif
 
+    tm.tm_year += 1900;
     char buffer[30];
-    std::strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+
+    buffer[0]  = weekdays[tm.tm_wday][0];
+    buffer[1]  = weekdays[tm.tm_wday][1];
+    buffer[2]  = weekdays[tm.tm_wday][2];
+    buffer[3]  = weekdays[tm.tm_wday][3];
+    buffer[4]  = ' ';
+    buffer[5]  = '0' + (tm.tm_mday / 10);
+    buffer[6]  = '0' + (tm.tm_mday % 10);
+    buffer[7]  = ' ';
+    buffer[8]  = months[tm.tm_mon][0];
+    buffer[9]  = months[tm.tm_mon][1];
+    buffer[10] = months[tm.tm_mon][2];
+    buffer[11] = months[tm.tm_mon][3];
+    buffer[12] = '0' + (tm.tm_year / 1000);
+    buffer[13] = '0' + ((tm.tm_year / 100) % 10);
+    buffer[14] = '0' + ((tm.tm_year / 10) % 10);
+    buffer[15] = '0' + (tm.tm_year % 10);
+    buffer[16] = ' ';
+    buffer[17] = '0' + (tm.tm_hour / 10);
+    buffer[18] = '0' + (tm.tm_hour % 10);
+    buffer[19] = ':';
+    buffer[20] = '0' + (tm.tm_min / 10);
+    buffer[21] = '0' + (tm.tm_min % 10);
+    buffer[22] = ':';
+    buffer[23] = '0' + (tm.tm_sec / 10);
+    buffer[24] = '0' + (tm.tm_sec % 10);
+    buffer[25] = ' ';
+    buffer[26] = 'G';
+    buffer[27] = 'M';
+    buffer[28] = 'T';
 
     this->m_headers.insert_or_assign("Date", std::string_view{buffer, 29});
 }
