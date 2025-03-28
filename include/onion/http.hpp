@@ -2,6 +2,8 @@
 
 #include "hash.hpp"
 
+#include <chrono>
+
 namespace onion {
 namespace detail {
 

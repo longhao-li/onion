@@ -1,8 +1,5 @@
 #include "onion/http.hpp"
 
-#include <chrono>
-#include <format>
-
 /// \brief
 ///   Case insensitive char map. Map upper-case characters to lower-case characters.
 static constexpr std::uint8_t case_insensitive_map[256] = {
@@ -324,7 +321,17 @@ auto onion::http_header_map::date() const noexcept -> std::optional<std::chrono:
 }
 
 auto onion::http_header_map::set_date(std::chrono::system_clock::time_point value) noexcept -> void {
-    std::int64_t seconds = std::chrono::duration_cast<std::chrono::seconds>(value.time_since_epoch()).count();
-    std::string  buffer  = std::format("{:%a, %d %b %Y %H:%M}:{} GMT", value, seconds % 60);
-    this->m_headers.insert_or_assign("Date", std::move(buffer));
+    std::time_t time = std::chrono::system_clock::to_time_t(value);
+    struct tm   tm;
+
+#if defined(_WIN32) || defined(_WIN64) || defined(__CYGWIN__)
+    ::gmtime_s(&tm, &time);
+#else
+    ::gmtime_r(&time, &tm);
+#endif
+
+    char buffer[30];
+    std::strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S GMT", &tm);
+
+    this->m_headers.insert_or_assign("Date", std::string_view{buffer, 29});
 }
