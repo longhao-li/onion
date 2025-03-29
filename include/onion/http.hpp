@@ -632,7 +632,7 @@ struct http_request {
     http_version version;
 
     /// \brief
-    ///   The full HTTP request URI. The URI string is already unescaped.
+    ///   The unescaped full HTTP request URI.
     std::string uri;
 
     /// \brief
@@ -640,12 +640,9 @@ struct http_request {
     std::string path;
 
     /// \brief
-    ///   HTTP parameters in route path. The parameter value strings are already unescaped.
+    ///   HTTP parameters in route path and queries in HTTP request URI. The parameter value strings are already
+    ///   unescaped.
     unordered_flat_map<std::string, std::string> params;
-
-    /// \brief
-    ///   Queries in HTTP request URI. The query key and value strings are already unescaped.
-    unordered_flat_map<std::string, std::string> queries;
 
     /// \brief
     ///   HTTP request headers.
@@ -653,6 +650,27 @@ struct http_request {
 
     /// \brief
     ///   HTTP request body.
+    std::string body;
+};
+
+/// \struct http_response
+/// \brief
+///   HTTP response structure.
+struct http_response {
+    /// \brief
+    ///   HTTP response version.
+    http_version version;
+
+    /// \brief
+    ///   HTTP response status code.
+    http_status status;
+
+    /// \brief
+    ///   HTTP response headers.
+    http_header_map headers;
+
+    /// \brief
+    ///   HTTP response body.
     std::string body;
 };
 
