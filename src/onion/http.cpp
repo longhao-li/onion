@@ -1427,14 +1427,20 @@ auto onion::http_server::handle_connection(tcp_stream stream) noexcept -> task<>
         while (error != HPE_OK) {
             if (error == HPE_PAUSED) [[likely]] {
                 context.response.clear();
-                task<> t = this->m_routers[context.request.method].match(context);
 
-                if (t == nullptr) [[unlikely]]
-                    context.response.not_found("404 Not Found");
-                else if (this->m_middleware != nullptr)
-                    co_await this->m_middleware(context, std::move(t));
-                else
-                    co_await t;
+                // Route the request.
+                auto iter = this->m_routers.find(context.request.method);
+                if (iter == this->m_routers.end()) [[unlikely]] {
+                    context.response.method_not_allowed("405 Method Not Allowed");
+                } else {
+                    task<> t = iter->second.match(context);
+                    if (t == nullptr) [[unlikely]]
+                        context.response.not_found("404 Not Found");
+                    else if (this->m_middleware != nullptr)
+                        co_await this->m_middleware(context, std::move(t));
+                    else
+                        co_await t;
+                }
 
                 // Send response.
                 std::string message    = to_string(context.response);
@@ -1563,14 +1569,20 @@ auto onion::http_server::handle_connection(unix_stream stream) noexcept -> task<
         while (error != HPE_OK) {
             if (error == HPE_PAUSED) [[likely]] {
                 context.response.clear();
-                task<> t = this->m_routers[context.request.method].match(context);
 
-                if (t == nullptr) [[unlikely]]
-                    context.response.not_found("404 Not Found");
-                else if (this->m_middleware != nullptr)
-                    co_await this->m_middleware(context, std::move(t));
-                else
-                    co_await t;
+                // Route the request.
+                auto iter = this->m_routers.find(context.request.method);
+                if (iter == this->m_routers.end()) [[unlikely]] {
+                    context.response.method_not_allowed("405 Method Not Allowed");
+                } else {
+                    task<> t = iter->second.match(context);
+                    if (t == nullptr) [[unlikely]]
+                        context.response.not_found("404 Not Found");
+                    else if (this->m_middleware != nullptr)
+                        co_await this->m_middleware(context, std::move(t));
+                    else
+                        co_await t;
+                }
 
                 // Send response.
                 std::string message    = to_string(context.response);
