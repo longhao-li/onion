@@ -1369,7 +1369,7 @@ auto http_parser_on_header_value_complete(llhttp_t *parser) noexcept -> int {
 } // namespace
 
 auto onion::http_server::handle_connection(tcp_stream stream) noexcept -> task<> {
-    std::array<char, 16384>                       buffer;
+    std::array<char, 65536>                       buffer;
     std::expected<std::uint32_t, std::error_code> result;
 
     http_context context{
@@ -1442,7 +1442,10 @@ auto onion::http_server::handle_connection(tcp_stream stream) noexcept -> task<>
                         co_await t;
                 }
 
-                // Send response.
+                // Send response. HTTP version and response date cannot be modified by user.
+                context.response.version = context.request.version;
+                context.response.set_date();
+
                 std::string message    = to_string(context.response);
                 const char *data       = message.data();
                 std::size_t total_sent = 0;
@@ -1511,7 +1514,7 @@ auto onion::http_server::handle_connection(tcp_stream stream) noexcept -> task<>
 
 #if defined(__linux) || defined(__linux__) || defined(__gnu_linux__)
 auto onion::http_server::handle_connection(unix_stream stream) noexcept -> task<> {
-    std::array<char, 16384>                       buffer;
+    std::array<char, 65536>                       buffer;
     std::expected<std::uint32_t, std::error_code> result;
 
     http_context context{
@@ -1584,7 +1587,10 @@ auto onion::http_server::handle_connection(unix_stream stream) noexcept -> task<
                         co_await t;
                 }
 
-                // Send response.
+                // Send response. HTTP version and response date cannot be modified by user.
+                context.response.version = context.request.version;
+                context.response.set_date();
+
                 std::string message    = to_string(context.response);
                 const char *data       = message.data();
                 std::size_t total_sent = 0;

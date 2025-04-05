@@ -165,4 +165,6 @@ auto onion::detail::hash(const void *data, std::size_t size) noexcept -> std::si
 alignas(16) const onion::detail::hash_table_state onion::detail::hash_table_state_empty_group[16] = {
     hash_table_state::sentinel, hash_table_state::empty, hash_table_state::empty, hash_table_state::empty,
     hash_table_state::empty,    hash_table_state::empty, hash_table_state::empty, hash_table_state::empty,
+    hash_table_state::empty,    hash_table_state::empty, hash_table_state::empty, hash_table_state::empty,
+    hash_table_state::empty,    hash_table_state::empty, hash_table_state::empty, hash_table_state::empty,
 };
