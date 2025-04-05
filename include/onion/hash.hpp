@@ -16,6 +16,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <typeindex>
 
 namespace onion {
 namespace detail {
@@ -338,6 +339,38 @@ struct hash<std::thread::id> {
     auto operator()(const std::thread::id &value) const noexcept -> std::size_t {
         static_assert(sizeof(std::thread::id) <= 16);
         return detail::small_object_hash(&value, sizeof(value));
+    }
+};
+
+/// \struct hash
+/// \brief
+///   Hasher for \c std::type_info.
+template <>
+struct hash<std::type_info> {
+    using is_transparent = void;
+
+    auto operator()(const std::type_info &value) const noexcept -> std::size_t {
+        return detail::hash(value.name(), std::char_traits<char>::length(value.name()));
+    }
+
+    auto operator()(const std::type_index &value) const noexcept -> std::size_t {
+        return detail::hash(value.name(), std::char_traits<char>::length(value.name()));
+    }
+};
+
+/// \struct hash
+/// \brief
+///   Hasher for \c std::type_index.
+template <>
+struct hash<std::type_index> {
+    using is_transparent = void;
+
+    auto operator()(const std::type_index &value) const noexcept -> std::size_t {
+        return detail::hash(value.name(), std::char_traits<char>::length(value.name()));
+    }
+
+    auto operator()(const std::type_info &value) const noexcept -> std::size_t {
+        return detail::hash(value.name(), std::char_traits<char>::length(value.name()));
     }
 };
 
@@ -1145,18 +1178,18 @@ private:
         /// \param allocator
         ///   Allocator that is used to destroy elements.
         auto destroy_elements(allocator_type &allocator) noexcept -> void {
-            hash_table_state *states = this->states;
-            value_type       *values = this->values;
+            hash_table_state *state_array = this->states;
+            value_type       *value_array = this->values;
             for (size_type remaining = this->size; remaining != 0;) {
-                auto group = hash_table_load_states(states);
+                auto group = hash_table_load_states(state_array);
                 for (auto mask = hash_table_mask_full_slots(group); mask != 0; mask &= mask - 1) {
                     int index = std::countr_zero(mask);
-                    allocator_traits::destroy(allocator, values + index);
+                    allocator_traits::destroy(allocator, value_array + index);
                     remaining -= 1;
                 }
 
-                states += hash_table_group_width;
-                values += hash_table_group_width;
+                state_array += hash_table_group_width;
+                value_array += hash_table_group_width;
             }
         }
 
@@ -1511,7 +1544,7 @@ public:
         if (!result.second)
             allocator_traits::destroy(origin_alloc, result.first.m_value);
         allocator_traits::construct(origin_alloc, result.first.m_value, std::piecewise_construct,
-                                    std::forward_as_tuple(std::forward<K>(value)),
+                                    std::forward_as_tuple(std::forward<K>(key)),
                                     std::forward_as_tuple(std::forward<M>(value)));
 
         return result;
@@ -1639,7 +1672,8 @@ public:
             const auto empty_before = hash_table_mask_empty_slots(hash_table_load_states(storage.states + before));
 
             return (empty_before != 0 && empty_after != 0 &&
-                    std::countr_zero(empty_after) + std::countl_zero(empty_before) < hash_table_group_width);
+                    std::countr_zero(empty_after) + std::countl_zero(empty_before) <
+                        static_cast<int>(hash_table_group_width));
         };
 
         if (group_never_full()) {
@@ -2296,7 +2330,7 @@ auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::prepare_
     while (true) {
         // It is safe to do this for empty hash table.
         auto states = hash_table_load_states(storage.states + seq.offset());
-        for (auto mask = hash_table_match_h2(states, h2); mask != 0; mask &= (mask - 1)) {
+        for (auto mask = hash_table_match_h2(states, static_cast<std::uint8_t>(h2)); mask != 0; mask &= (mask - 1)) {
             std::size_t index = seq.offset(std::countr_zero(mask));
             if (equal(key_reference(storage.values[index]), key)) [[likely]]
                 return {iterator{storage.states + index, storage.values + index}, false};
@@ -2309,7 +2343,7 @@ auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::prepare_
                 this->rehash(hash_table_next_capacity(storage.capacity));
 
                 std::size_t offset = storage.find_first_non_full(h);
-                storage.set_state(offset, h2);
+                storage.set_state(offset, static_cast<std::uint8_t>(h2));
                 storage.size += 1;
 
                 return {iterator{storage.states + offset, storage.values + offset}, true};
@@ -2320,14 +2354,14 @@ auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::prepare_
                     this->rehash(hash_table_next_capacity(storage.capacity));
 
                 std::size_t offset = storage.find_first_non_full(h);
-                storage.set_state(offset, h2);
+                storage.set_state(offset, static_cast<std::uint8_t>(h2));
                 storage.size += 1;
 
                 return {iterator{storage.states + offset, storage.values + offset}, true};
             }
 
             std::size_t offset = seq.offset(std::countr_zero(empty_mask));
-            storage.set_state(offset, h2);
+            storage.set_state(offset, static_cast<std::uint8_t>(h2));
             storage.size += 1;
 
             return {iterator{storage.states + offset, storage.values + offset}, true};
@@ -2356,7 +2390,7 @@ auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::find_key
     while (true) {
         // It is safe to do this for empty hash table.
         auto states = hash_table_load_states(storage.states + seq.offset());
-        for (auto mask = hash_table_match_h2(states, h2); mask != 0; mask &= (mask - 1)) {
+        for (auto mask = hash_table_match_h2(states, static_cast<std::uint8_t>(h2)); mask != 0; mask &= (mask - 1)) {
             std::size_t index = seq.offset(std::countr_zero(mask));
             if (equal(key_reference(storage.values[index]), key)) [[likely]]
                 return {storage.states + index, storage.values + index};
@@ -2372,7 +2406,6 @@ auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::find_key
 template <typename Key, typename Mapped, typename Hash, typename KeyEqual, typename Allocator>
 auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::drop_deleted() noexcept -> void {
     hasher    &hash    = this->m_internal.template get<1>();
-    key_equal &equal   = this->m_internal.template get<2>();
     storage_t &storage = this->m_internal.template get<3>();
 
     // Marks that there is no deleted node any more.
@@ -2439,14 +2472,14 @@ auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::drop_del
 
         // No need to move this element.
         if (probe_index(offset) == probe_index(i)) [[likely]] {
-            storage.set_state(i, h2);
+            storage.set_state(i, static_cast<std::uint8_t>(h2));
             ++state, ++value;
             continue;
         }
 
         // Move the element.
         if (storage.states[offset] == hash_table_state::empty) {
-            storage.set_state(offset, h2);
+            storage.set_state(offset, static_cast<std::uint8_t>(h2));
             allocator_traits::construct(origin_alloc, storage.values + offset, std::move(*value));
             allocator_traits::destroy(origin_alloc, value);
             storage.set_state(i, hash_table_state::empty);
@@ -2455,7 +2488,7 @@ auto onion::detail::hash_table<Key, Mapped, Hash, KeyEqual, Allocator>::drop_del
 
             ++state, ++value;
         } else {
-            storage.set_state(offset, h2);
+            storage.set_state(offset, static_cast<std::uint8_t>(h2));
 
             if (temp_value == nullptr) [[unlikely]] {
                 size_type empty_index = find_empty_slot(i + 1, storage.capacity);

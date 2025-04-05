@@ -1,6 +1,6 @@
 #include "onion/io_context.hpp"
 
-#include <doctest/doctest.h>
+#include <gtest/gtest.h>
 
 #include <chrono>
 #include <mutex>
@@ -10,7 +10,15 @@
 using namespace onion;
 using namespace std::chrono_literals;
 
-TEST_CASE("[task] coroutine context switch") {
+// A dirty hack to use google test in coroutines.
+#define assert_true(statement)             [&] { ASSERT_TRUE(statement); }()
+#define assert_false(statement)            [&] { ASSERT_FALSE(statement); }()
+#define assert_eq(val1, val2)              [&] { ASSERT_EQ(val1, val2); }()
+#define assert_ne(val1, val2)              [&] { ASSERT_NE(val1, val2); }()
+#define assert_ge(val1, val2)              [&] { ASSERT_GE(val1, val2); }()
+#define assert_throw(statement, exception) [&] { ASSERT_THROW(statement, exception); }()
+
+TEST(task, coroutine_context_switch) {
     io_context ctx;
 
     const int value = 42;
@@ -24,19 +32,20 @@ TEST_CASE("[task] coroutine context switch") {
 
     auto task1 = [&]() -> task<std::string> {
         const int &v = co_await task2();
-        CHECK(v == 42);
+        // A dirty hack to use google test in coroutines.
+        assert_eq(v, 42);
         co_return "Hello, World!";
     };
 
     auto task0 = [&]() -> task<> {
         std::string str = co_await task1();
-        CHECK(str == "Hello, World!");
+        assert_eq(str, "Hello, World!");
 
         int v = co_await task2();
-        CHECK(v == 42);
+        assert_eq(v, 42);
 
         str = co_await task1();
-        CHECK(str == "Hello, World!");
+        assert_eq(str, "Hello, World!");
 
         ctx.stop();
     };
@@ -45,19 +54,19 @@ TEST_CASE("[task] coroutine context switch") {
     ctx.run();
 }
 
-TEST_CASE("[task] manually control") {
+TEST(task, manually_control) {
     auto manual_task = []() -> task<int> { co_return 42; };
 
     auto task = manual_task();
-    CHECK(task);
-    CHECK(!task.done());
+    assert_true(task);
+    assert_false(task.done());
 
     task.coroutine().resume();
-    CHECK(task.done());
-    CHECK(std::move(task.promise()).result() == 42);
+    assert_true(task.done());
+    assert_eq(std::move(task.promise()).result(), 42);
 }
 
-TEST_CASE("[task] manual exception control") {
+TEST(task, manual_exception_control) {
     int dummy = 42;
 
     auto int_exception_task = []() -> task<int> {
@@ -76,31 +85,31 @@ TEST_CASE("[task] manual exception control") {
     };
 
     auto int_task = int_exception_task();
-    CHECK(int_task);
-    CHECK(!int_task.done());
+    assert_true(int_task);
+    assert_false(int_task.done());
 
     int_task.coroutine().resume();
-    CHECK(int_task.done());
-    CHECK_THROWS_AS(std::ignore = std::move(int_task.promise()).result(), std::runtime_error);
+    assert_true(int_task.done());
+    assert_throw(std::ignore = std::move(int_task.promise()).result(), std::runtime_error);
 
     auto int_ref_task = int_ref_exception_task();
-    CHECK(int_ref_task);
-    CHECK(!int_ref_task.done());
+    assert_true(int_ref_task);
+    assert_false(int_ref_task.done());
 
     int_ref_task.coroutine().resume();
-    CHECK(int_ref_task.done());
-    CHECK_THROWS_AS(std::ignore = int_ref_task.promise().result(), std::runtime_error);
+    assert_true(int_ref_task.done());
+    assert_throw(std::ignore = int_ref_task.promise().result(), std::runtime_error);
 
     auto void_task = void_exception_task();
-    CHECK(void_task);
-    CHECK(!void_task.done());
+    assert_true(void_task);
+    assert_false(void_task.done());
 
     void_task.coroutine().resume();
-    CHECK(void_task.done());
-    CHECK_THROWS_AS(void_task.promise().result(), std::runtime_error);
+    assert_true(void_task.done());
+    assert_throw(void_task.promise().result(), std::runtime_error);
 }
 
-TEST_CASE("[task] yielding") {
+TEST(task, yielding) {
     io_context ctx;
 
     auto task = [&]() -> onion::task<> {
@@ -115,7 +124,7 @@ TEST_CASE("[task] yielding") {
     ctx.run();
 }
 
-TEST_CASE("[task] sleeping") {
+TEST(task, sleeping) {
     io_context ctx;
 
     auto task = [&]() -> onion::task<> {
@@ -123,24 +132,21 @@ TEST_CASE("[task] sleeping") {
             auto start = std::chrono::high_resolution_clock::now();
             co_await sleep(200ms);
             auto end = std::chrono::high_resolution_clock::now();
-
-            CHECK(end - start >= 200ms);
+            assert_ge(end - start, 200ms);
         }
 
         {
             auto start = std::chrono::high_resolution_clock::now();
             co_await sleep(1s);
             auto end = std::chrono::high_resolution_clock::now();
-
-            CHECK(end - start >= 1s);
+            assert_ge(end - start, 1s);
         }
 
         for (std::size_t i = 0; i < 3; ++i) {
             auto start = std::chrono::high_resolution_clock::now();
             co_await sleep(-1s);
             auto end = std::chrono::high_resolution_clock::now();
-
-            CHECK(end - start >= 0s);
+            assert_ge(end - start, 0ms);
         }
 
         ctx.stop();
@@ -150,15 +156,15 @@ TEST_CASE("[task] sleeping") {
     ctx.run();
 }
 
-TEST_CASE("[io_context_pool] dispatch with context ID") {
+TEST(io_context_pool, dispatch_with_context_id) {
     io_context_pool       pool;
     std::mutex            mutex;
     std::set<std::size_t> id_set;
 
     const auto task_with_context_id = [&](std::size_t id) -> task<> {
         std::lock_guard<std::mutex> lock{mutex};
-        CHECK(id_set.find(id) == id_set.end());
-        CHECK(id_set.insert(id).second);
+        assert_eq(id_set.find(id), id_set.end());
+        assert_true(id_set.insert(id).second);
         if (id_set.size() == pool.size())
             pool.stop();
         co_return;
@@ -167,7 +173,7 @@ TEST_CASE("[io_context_pool] dispatch with context ID") {
     pool.dispatch(task_with_context_id);
     pool.run();
 
-    CHECK(id_set.size() == pool.size());
+    assert_eq(id_set.size(), pool.size());
     for (std::size_t i = 0; i < pool.size(); ++i)
-        CHECK(id_set.find(i) != id_set.end());
+        assert_ne(id_set.find(i), id_set.end());
 }

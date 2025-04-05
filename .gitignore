@@ -69,3 +69,6 @@ bld/
 [Oo]bj/
 [Ll]og/
 [Ll]ogs/
+
+# Xmake Build Cache.
+.xmake/
