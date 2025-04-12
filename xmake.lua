@@ -1,19 +1,28 @@
 set_project("onion")
 set_version("0.0.0")
 
+add_rules("mode.debug", "mode.release")
+
 option("warnings_as_errors", {description = "Treat warnings as errors.", default = false})
 option("enable_lto", {description = "Enable link-time optimization for onion shared library.", default = false})
 option("build_tests", {description = "Build onion tests.", default = false})
 option("build_examples", {description = "Build onion examples.", default = false})
+option("build_benchmarks", {description = "Build onion benchmarks.", default = false})
 
 add_requires("llhttp >=9.2.1")
+
+if is_plat("linux") then
+    add_requires("liburing >=2.8")
+end
 
 if has_config("build_tests") then
     add_requires("gtest >=1.15.0")
 end
 
-if is_plat("linux") then
-    add_requires("liburing >=2.8")
+if has_config("build_benchmarks") then
+    add_requires("abseil")
+    add_requires("benchmark")
+    add_requires("unordered_dense")
 end
 
 target("onion")
@@ -98,5 +107,16 @@ if has_config("build_examples") then
 
         add_files("examples/http_server.cpp")
         add_deps("onion")
+    target_end()
+end
+
+if has_config("build_benchmarks") then
+    target("onion-benchmark")
+        set_kind("binary")
+        set_languages("cxx23")
+
+        add_files("benchmarks/*.cpp")
+        add_deps("onion")
+        add_packages("abseil", "benchmark", "unordered_dense")
     target_end()
 end
