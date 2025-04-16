@@ -1062,6 +1062,10 @@ auto onion::unix_listener::listen(std::string_view address) noexcept -> std::err
     std::ranges::copy(address, addr.sun_path);
     addr.sun_path[address.size()] = '\0';
 
+    // Try to unlink the previous socket if exists.
+    if (::access(addr.sun_path, F_OK) == 0)
+        ::unlink(addr.sun_path);
+
     // Create a new socket for the server.
     socket_t s = ::socket(AF_UNIX, SOCK_STREAM, 0);
     if (s == -1) [[unlikely]]

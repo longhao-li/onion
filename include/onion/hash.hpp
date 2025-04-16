@@ -27,12 +27,7 @@ namespace detail {
 ///   Pointer to start of data to be hashed.
 /// \param size
 ///   Size in byte of data to be hashed.
-[[nodiscard]] ONION_API auto hash(const void *data, std::size_t size) noexcept -> std::size_t;
-
-/// \brief
-///   Hash data using a custom hash function. We use rapidhash for 64-bit systems and wyhash32 for 32-bit systems. This
-///   function could only be used for objects that are less than 16 bytes.
-[[nodiscard]] inline auto small_object_hash(const void *data, std::size_t size) noexcept -> std::size_t {
+[[nodiscard]] inline auto hash(const void *data, std::size_t size) noexcept -> std::size_t {
 #if UINTPTR_MAX >= UINT64_MAX
     constexpr std::uint64_t rapid_seed = 0xBDD89AA982704029ULL;
     constexpr std::uint64_t secrets[3] = {0x2D358DCCAA6C78A5ULL, 0x8BB84B93962EACC9ULL, 0x4B33A62ED433D4A3ULL};
@@ -72,12 +67,33 @@ namespace detail {
         return a ^ b;
     };
 
-    const auto read32 = [](const std::uint8_t *position) -> std::uint64_t {
+    const auto read64 = [](const std::uint8_t *position) -> std::uint64_t {
         std::uint64_t value = 0;
+#    if defined(__clang__) || defined(__GNUC__)
+        __builtin_memcpy(&value, position, sizeof(value));
+#    else
         value |= static_cast<std::uint64_t>(position[0]) << 0;
         value |= static_cast<std::uint64_t>(position[1]) << 8;
         value |= static_cast<std::uint64_t>(position[2]) << 16;
         value |= static_cast<std::uint64_t>(position[3]) << 24;
+        value |= static_cast<std::uint64_t>(position[4]) << 32;
+        value |= static_cast<std::uint64_t>(position[5]) << 40;
+        value |= static_cast<std::uint64_t>(position[6]) << 48;
+        value |= static_cast<std::uint64_t>(position[7]) << 56;
+#    endif
+        return value;
+    };
+
+    const auto read32 = [](const std::uint8_t *position) -> std::uint64_t {
+        std::uint32_t value = 0;
+#    if defined(__clang__) || defined(__GNUC__)
+        __builtin_memcpy(&value, position, sizeof(value));
+#    else
+        value |= static_cast<std::uint32_t>(position[0]) << 0;
+        value |= static_cast<std::uint32_t>(position[1]) << 8;
+        value |= static_cast<std::uint32_t>(position[2]) << 16;
+        value |= static_cast<std::uint32_t>(position[3]) << 24;
+#    endif
         return value;
     };
 
@@ -86,15 +102,44 @@ namespace detail {
     std::uint64_t b    = 0;
 
     const auto *position = static_cast<const std::uint8_t *>(data);
-    if (size >= 4) [[likely]] {
-        const std::uint8_t *last  = position + size - 4;
-        const std::uint64_t delta = ((size & 24) >> (size >> 3));
+    if (size <= 16) [[likely]] {
+        if (size >= 4) [[likely]] {
+            const std::uint8_t *last  = position + size - 4;
+            const std::uint64_t delta = ((size & 24) >> (size >> 3));
 
-        a = (read32(position) << 32) | read32(last);
-        b = (read32(position + delta) << 32) | read32(last - delta);
-    } else if (size > 0) [[likely]] {
-        a = (static_cast<std::uint64_t>(position[0]) << 56) | (static_cast<std::uint64_t>(position[size >> 1]) << 32) |
-            static_cast<std::uint64_t>(position[size - 1]);
+            a = (read32(position) << 32) | read32(last);
+            b = (read32(position + delta) << 32) | read32(last - delta);
+        } else if (size > 0) [[likely]] {
+            a = (static_cast<std::uint64_t>(position[0]) << 56) |
+                (static_cast<std::uint64_t>(position[size >> 1]) << 32) |
+                static_cast<std::uint64_t>(position[size - 1]);
+        }
+    } else {
+        std::size_t i = size;
+
+        if (i > 48) {
+            std::uint64_t seed1 = seed;
+            std::uint64_t seed2 = seed;
+
+            do {
+                seed  = mix(read64(position) ^ secrets[0], read64(position + 8) ^ seed);
+                seed1 = mix(read64(position + 16) ^ secrets[1], read64(position + 24) ^ seed1);
+                seed2 = mix(read64(position + 32) ^ secrets[2], read64(position + 40) ^ seed2);
+                position += 48;
+                i -= 48;
+            } while (i >= 48);
+
+            seed ^= (seed1 ^ seed2);
+        }
+
+        if (i > 16) {
+            seed = mix(read64(position) ^ secrets[2], read64(position + 8) ^ seed ^ secrets[1]);
+            if (i > 32)
+                seed = mix(read64(position + 16) ^ secrets[2], read64(position + 24) ^ seed);
+        }
+
+        a = read64(position + i - 16);
+        b = read64(position + i - 8);
     }
 
     a ^= secrets[1];
@@ -103,7 +148,56 @@ namespace detail {
     mul(a, b);
     return mix(a ^ secrets[0] ^ size, b ^ secrets[1]);
 #else
-    return hash(data, size);
+    const auto read32 = [](const std::uint8_t *position) -> std::uint32_t {
+        std::uint32_t value = 0;
+#    if defined(__clang__) || defined(__GNUC__)
+        __builtin_memcpy(&value, position, sizeof(value));
+#    else
+        value |= static_cast<std::uint32_t>(position[0]) << 0;
+        value |= static_cast<std::uint32_t>(position[1]) << 8;
+        value |= static_cast<std::uint32_t>(position[2]) << 16;
+        value |= static_cast<std::uint32_t>(position[3]) << 24;
+#    endif
+        return value;
+    };
+
+    const auto mix = [](std::uint32_t &a, std::uint32_t &b) -> void {
+        std::uint64_t c = a ^ 0x53C5CA59ULL;
+        std::uint64_t d = b ^ 0x74743C1BULL;
+        std::uint64_t e = c * d;
+
+        a = static_cast<std::uint32_t>(e & 0xFFFFFFFFU);
+        b = static_cast<std::uint32_t>(e >> 32);
+    };
+
+    const auto   *position = static_cast<const std::uint8_t *>(data);
+    std::uint32_t seed     = 0x89AA9827U;
+    std::size_t   i        = size;
+
+    auto seed1 = static_cast<std::uint32_t>(size);
+    mix(seed, seed1);
+
+    while (i > 8) {
+        seed ^= read32(position);
+        seed1 ^= read32(position + 4);
+        mix(seed, seed1);
+
+        i -= 8;
+        position += 8;
+    }
+
+    if (i >= 4) {
+        seed ^= read32(position);
+        seed1 ^= read32(position + i - 4);
+    } else if (i != 0) {
+        seed ^= (static_cast<std::uint32_t>(position[0]) << 16) | (static_cast<std::uint32_t>(position[i >> 1]) << 8) |
+                static_cast<std::uint32_t>(position[i - 1]);
+    }
+
+    mix(seed, seed1);
+    mix(seed, seed1);
+
+    return seed ^ seed1;
 #endif
 }
 
@@ -139,7 +233,7 @@ struct hash<T, std::enable_if_t<std::is_arithmetic_v<T>>> {
 
     auto operator()(T value) const noexcept -> std::size_t {
         static_assert(sizeof(T) <= 16, "Arithmetic type is too large.");
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 
     template <typename U>
@@ -147,7 +241,7 @@ struct hash<T, std::enable_if_t<std::is_arithmetic_v<T>>> {
     auto operator()(U value) const noexcept -> std::size_t {
         static_assert(sizeof(T) <= 16, "Arithmetic type is too large.");
         T temp = static_cast<T>(value);
-        return detail::small_object_hash(&temp, sizeof(temp));
+        return detail::hash(&temp, sizeof(temp));
     }
 };
 
@@ -158,7 +252,7 @@ template <typename T>
 struct hash<T, std::enable_if_t<std::is_enum_v<T>>> {
     auto operator()(T value) const noexcept -> std::size_t {
         static_assert(sizeof(T) <= 16, "Arithmetic type is too large.");
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 };
 
@@ -170,7 +264,7 @@ struct hash<T *> {
     using is_transparent = void;
 
     auto operator()(void *value) const noexcept -> std::size_t {
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 };
 
@@ -180,7 +274,7 @@ struct hash<T *> {
 template <>
 struct hash<std::nullptr_t> {
     auto operator()(std::nullptr_t value) const noexcept -> std::size_t {
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 };
 
@@ -193,7 +287,7 @@ struct hash<std::coroutine_handle<T>> {
 
     template <typename U>
     auto operator()(std::coroutine_handle<U> value) const noexcept -> std::size_t {
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 };
 
@@ -204,7 +298,7 @@ template <>
 struct hash<std::error_code> {
     auto operator()(const std::error_code &value) const noexcept -> std::size_t {
         static_assert(sizeof(std::error_code) <= 16);
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 };
 
@@ -215,7 +309,7 @@ template <>
 struct hash<std::error_condition> {
     auto operator()(const std::error_condition &value) const noexcept -> std::size_t {
         static_assert(sizeof(std::error_condition) <= 16);
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 };
 
@@ -231,7 +325,7 @@ struct hash<std::optional<T>> {
             return hash<std::remove_const_t<T>>{}(value.value());
         } else {
             std::nullptr_t null = nullptr;
-            return detail::small_object_hash(&null, sizeof(null));
+            return detail::hash(&null, sizeof(null));
         }
     }
 
@@ -247,7 +341,7 @@ template <std::size_t Size>
 struct hash<std::bitset<Size>> {
     auto operator()(const std::bitset<Size> &value) const noexcept -> std::size_t {
         if constexpr (sizeof(value) <= 16) {
-            return detail::small_object_hash(&value, sizeof(value));
+            return detail::hash(&value, sizeof(value));
         } else if constexpr (sizeof(value) > 16) {
             return detail::hash(&value, sizeof(value));
         }
@@ -263,11 +357,11 @@ struct hash<std::unique_ptr<T, D>> {
 
     auto operator()(const std::unique_ptr<T, D> &value) const noexcept -> std::size_t {
         auto *pointer = value.get();
-        return detail::small_object_hash(&pointer, sizeof(pointer));
+        return detail::hash(&pointer, sizeof(pointer));
     }
 
     auto operator()(const void *value) const noexcept -> std::size_t {
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 };
 
@@ -280,11 +374,11 @@ struct hash<std::shared_ptr<T>> {
 
     auto operator()(const std::shared_ptr<T> &value) const noexcept -> std::size_t {
         auto *pointer = value.get();
-        return detail::small_object_hash(&pointer, sizeof(pointer));
+        return detail::hash(&pointer, sizeof(pointer));
     }
 
     auto operator()(const void *value) const noexcept -> std::size_t {
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 };
 
@@ -327,7 +421,7 @@ template <typename T>
 struct hash<task<T>> {
     auto operator()(const task<T> &value) const noexcept -> std::size_t {
         void *address = value.coroutine().address();
-        return detail::small_object_hash(&address, sizeof(address));
+        return detail::hash(&address, sizeof(address));
     }
 };
 
@@ -338,7 +432,7 @@ template <>
 struct hash<std::thread::id> {
     auto operator()(const std::thread::id &value) const noexcept -> std::size_t {
         static_assert(sizeof(std::thread::id) <= 16);
-        return detail::small_object_hash(&value, sizeof(value));
+        return detail::hash(&value, sizeof(value));
     }
 };
 
@@ -2706,64 +2800,6 @@ public:
         : unordered_flat_set{list, bucket_count, hasher{}, key_equal{}, allocator} {}
 
     /// \brief
-    ///   Create an unordered flat set with the specified range, bucket count, hasher, key equality comparison and
-    ///   allocator.
-    /// \tparam R
-    ///   Type of the range.
-    /// \param range
-    ///   Range to create the unordered flat set with.
-    /// \param bucket_count
-    ///   Initial number of buckets in this unordered flat set.
-    /// \param hash
-    ///   Hash function to use.
-    /// \param equal
-    ///   Key equality comparison to use.
-    /// \param allocator
-    ///   Allocator for this unordered flat set.
-    template <typename R>
-    unordered_flat_set(std::from_range_t,
-                       R                   &&range,
-                       size_type             bucket_count = 0,
-                       const hasher         &hash         = hasher{},
-                       const key_equal      &equal        = key_equal{},
-                       const allocator_type &allocator    = allocator_type{})
-        : super{std::ranges::begin(range), std::ranges::end(range), bucket_count, hash, equal, allocator} {}
-
-    /// \brief
-    ///   Create an unordered flat set with the specified range, bucket count and allocator.
-    /// \tparam R
-    ///   Type of the range.
-    /// \param range
-    ///   Range to create the unordered flat set with.
-    /// \param bucket_count
-    ///   Initial number of buckets in this unordered flat set.
-    /// \param allocator
-    ///   Allocator for this unordered flat set.
-    template <typename R>
-    unordered_flat_set(std::from_range_t, R &&range, size_type bucket_count, const allocator_type &allocator)
-        : unordered_flat_set{std::from_range, std::forward<R>(range), bucket_count, hasher{}, key_equal{}, allocator} {}
-
-    /// \brief
-    ///   Create an unordered flat set with the specified range, bucket count, hasher and allocator.
-    /// \tparam R
-    ///   Type of the range.
-    /// \param range
-    ///   Range to create the unordered flat set with.
-    /// \param bucket_count
-    ///   Initial number of buckets in this unordered flat set.
-    /// \param hash
-    ///   Hash function to use.
-    /// \param allocator
-    ///   Allocator for this unordered flat set.
-    template <typename R>
-    unordered_flat_set(std::from_range_t,
-                       R                   &&range,
-                       size_type             bucket_count,
-                       const hasher         &hash,
-                       const allocator_type &allocator)
-        : unordered_flat_set{std::from_range, std::forward<R>(range), bucket_count, hash, key_equal{}, allocator} {}
-
-    /// \brief
     ///   Destroy this unordered flat set.
     ~unordered_flat_set() = default;
 
@@ -3356,65 +3392,6 @@ public:
                        const hasher                     &hash,
                        const allocator_type             &allocator)
         : unordered_flat_map{list, bucket_count, hash, key_equal{}, allocator} {}
-
-    /// \brief
-    ///   Create an \c unordered_flat_map with the specified range of objects, bucket count, hasher, key equality
-    ///   comparison and allocator.
-    /// \tparam R
-    ///   Type of input range.
-    /// \param range
-    ///   Range of objects to be copied.
-    /// \param bucket_count
-    ///   Initial number of buckets in this unordered flat map.
-    /// \param hash
-    ///   Hash function to use.
-    /// \param equal
-    ///   Key equality comparison to use.
-    /// \param allocator
-    ///   Allocator for this unordered flat map.
-    template <typename R>
-    unordered_flat_map(std::from_range_t,
-                       R                   &&range,
-                       size_type             bucket_count = 0,
-                       const hasher         &hash         = hasher{},
-                       const key_equal      &equal        = key_equal{},
-                       const allocator_type &allocator    = allocator_type{})
-        : unordered_flat_map{std::ranges::begin(range), std::ranges::end(range), bucket_count, hash, equal, allocator} {
-    }
-
-    /// \brief
-    ///   Create an \c unordered_flat_map with the specified range of objects, bucket count and allocator.
-    /// \tparam R
-    ///   Type of input range.
-    /// \param range
-    ///   Range of objects to be copied.
-    /// \param bucket_count
-    ///   Initial number of buckets in this unordered flat map.
-    /// \param allocator
-    ///   Allocator for this unordered flat map.
-    template <typename R>
-    unordered_flat_map(std::from_range_t, R &&range, size_type bucket_count, const allocator_type &allocator)
-        : unordered_flat_map{std::from_range, std::forward<R>(range), bucket_count, hasher{}, key_equal{}, allocator} {}
-
-    /// \brief
-    ///   Create an \c unordered_flat_map with the specified range of objects, bucket count, hasher and allocator.
-    /// \tparam R
-    ///   Type of input range.
-    /// \param range
-    ///   Range of objects to be copied.
-    /// \param bucket_count
-    ///   Initial number of buckets in this unordered flat map.
-    /// \param hash
-    ///   Hash function to use.
-    /// \param allocator
-    ///   Allocator for this unordered flat map.
-    template <typename R>
-    unordered_flat_map(std::from_range_t,
-                       R                   &&range,
-                       size_type             bucket_count,
-                       const hasher         &hash,
-                       const allocator_type &allocator)
-        : unordered_flat_map{std::from_range, std::forward<R>(range), bucket_count, hash, key_equal{}, allocator} {}
 
     /// \brief
     ///   Destroy this unordered flat map.

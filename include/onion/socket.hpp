@@ -1819,6 +1819,7 @@ public:
         connect_awaitable(unix_stream &stream, std::string_view address) noexcept
             : m_ovlp{},
               m_socket{invalid_socket},
+              m_address{},
               m_stream{&stream} {
             // Return invalid argument if address is too long.
             if (address.size() >= sizeof(this->m_address.sun_path)) [[unlikely]]
@@ -1826,7 +1827,6 @@ public:
 
             this->m_address.sun_family = AF_UNIX;
             std::ranges::copy(address, this->m_address.sun_path);
-            this->m_address.sun_path[address.size()] = '\0';
         }
 
         /// \brief
