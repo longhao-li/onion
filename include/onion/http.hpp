@@ -637,6 +637,183 @@ private:
     unordered_flat_map<std::string, std::string, hasher, key_equal> m_headers;
 };
 
+/// \class http_body
+/// \brief
+///   Polymorphic HTTP body class. This class is used to represent the body of an HTTP request or response. This class
+///   is similar to async input stream.
+class http_body {
+public:
+    /// \brief
+    ///   Create a null \c http_body.
+    http_body() noexcept = default;
+
+    /// \brief
+    ///   Create a new \c http_body with the given object.
+    /// \tparam T
+    ///   Type of the object to be used as the HTTP body. The type must have a \c size() function that returns the size
+    ///   of the body and a \c read() function that reads data from the body.
+    /// \tparam Args
+    ///   Types of arguments to be passed to the constructor of the object.
+    /// \param args
+    ///   Arguments to be passed to the constructor of the object.
+    template <typename T, typename... Args>
+        requires requires(T body, void *buffer, std::uint32_t size) {
+            { body.size() } -> std::same_as<std::optional<std::uint64_t>>;
+            { body.read(buffer, size) } -> std::same_as<task<std::expected<std::uint32_t, std::error_code>>>;
+        }
+    http_body(std::in_place_type_t<T>, Args &&...args) noexcept(std::is_nothrow_constructible_v<T, Args &&...>)
+        : m_object{new T(std::forward<Args>(args)...)},
+          m_size{static_cast<T *>(m_object)->size()},
+          m_read{&http_body::read_function<T>},
+          m_destroy{&http_body::destroy_function<T>} {}
+
+    /// \brief
+    ///   Create a new \c http_body with the given object.
+    /// \tparam T
+    ///   Type of the object to be used as the HTTP body. The type must have a \c size() function that returns the size
+    ///   of the body and a \c read() function that reads data from the body.
+    /// \param object
+    ///   The object to be used as the HTTP body. The object must have a \c size() function that returns the size of the
+    ///   body and a \c read() function that reads data from the body.
+    template <typename T>
+        requires requires(T body, void *buffer, std::uint32_t size) {
+            { body.size() } -> std::same_as<std::optional<std::uint64_t>>;
+            { body.read(buffer, size) } -> std::same_as<task<std::expected<std::uint32_t, std::error_code>>>;
+        }
+    http_body(T &&object) noexcept(std::is_nothrow_constructible_v<std::remove_cvref_t<T>, decltype(object)>)
+        : m_object{new T{std::forward<T>(object)}},
+          m_size{static_cast<T *>(m_object)->size()},
+          m_read{&http_body::read_function<T>},
+          m_destroy{&http_body::destroy_function<T>} {}
+
+    /// \brief
+    ///   \c http_body is not copyable.
+    http_body(const http_body &other) = delete;
+
+    /// \brief
+    ///   Move constructor of \c http_body.
+    /// \param[inout] other
+    ///   The \c http_body to move. The moved \c http_body will be null.
+    http_body(http_body &&other) noexcept
+        : m_object{other.m_object},
+          m_size{other.m_size},
+          m_read{other.m_read},
+          m_destroy{other.m_destroy} {
+        other.m_object  = nullptr;
+        other.m_size    = std::nullopt;
+        other.m_read    = nullptr;
+        other.m_destroy = nullptr;
+    }
+
+    /// \brief
+    ///   Destroy this \c http_body object.
+    ~http_body() noexcept {
+        if (this->m_object != nullptr)
+            this->m_destroy(this->m_object);
+    }
+
+    /// \brief
+    ///   \c http_body is not copyable.
+    auto operator=(const http_body &other) = delete;
+
+    /// \brief
+    ///   Move assignment of \c http_body.
+    /// \param[inout] other
+    ///   The \c http_body to move. The moved \c http_body will be null.
+    /// \return
+    ///   Reference to this \c http_body.
+    auto operator=(http_body &&other) noexcept -> http_body & {
+        if (this == &other) [[unlikely]]
+            return *this;
+
+        if (this->m_object != nullptr)
+            this->m_destroy(this->m_object);
+
+        this->m_object  = other.m_object;
+        this->m_size    = other.m_size;
+        this->m_read    = other.m_read;
+        this->m_destroy = other.m_destroy;
+
+        other.m_object  = nullptr;
+        other.m_size    = std::nullopt;
+        other.m_read    = nullptr;
+        other.m_destroy = nullptr;
+
+        return *this;
+    }
+
+    /// \brief
+    ///   Get total size of this \c http_body. Please notice that not all \c http_body objects have size. For streaming
+    ///   body, the size is unknown. In this case, \c std::nullopt will be returned.
+    /// \return
+    ///   Size of this \c http_body. If the size is unknown, \c std::nullopt will be returned.
+    [[nodiscard]] auto size() const noexcept -> std::optional<std::uint64_t> {
+        return this->m_size;
+    }
+
+    /// \brief
+    ///   Read data from this \c http_body.
+    /// \param[out] buffer
+    ///   Pointer to buffer to store the read data.
+    /// \param size
+    ///   Size of the buffer to store the read data.
+    /// \return
+    ///   Number of bytes read from this \c http_body. If the read operation fails, an error code should be returned.
+    auto read(void *buffer, std::uint32_t size) -> task<std::expected<std::uint32_t, std::error_code>> {
+        return this->m_read(this->m_object, buffer, size);
+    }
+
+private:
+    /// \brief
+    ///   Helper function to get read function pointer from the object.
+    /// \tparam T
+    ///   Type of the object to be used as the HTTP body. The type must have a \c read() function that reads data from
+    ///   the body.
+    /// \param object
+    ///   Pointer to the object to be used as the HTTP body.
+    /// \param buffer
+    ///   Pointer to buffer to store the read data.
+    /// \param size
+    ///   Size of the buffer to store the read data.
+    /// \return
+    ///   Number of bytes read from the object. If the read operation fails, an error code should be returned.
+    template <typename T>
+    static auto read_function(void *object, void *buffer, std::uint32_t size)
+        -> task<std::expected<std::uint32_t, std::error_code>> {
+        return static_cast<T *>(object)->read(buffer, size);
+    }
+
+    /// \brief
+    ///   Helper function to get destroy function pointer from the object.
+    /// \tparam T
+    ///   Type of the object to be used as the HTTP body.
+    /// \param object
+    ///   Pointer to the object to be used as the HTTP body.
+    template <typename T>
+    static auto destroy_function(void *object) noexcept -> void {
+        delete static_cast<T *>(object);
+    }
+
+private:
+    /// \brief
+    ///   Pointer to the actual HTTP body object.
+    void *m_object = nullptr;
+
+    /// \brief
+    ///   Total size of data in this HTTP body object to be read. This value is \c std::nullopt if the size is unknown
+    ///   (The HTTP body is a stream).
+    std::optional<std::uint64_t> m_size = std::nullopt;
+
+    /// \brief
+    ///   Async read function pointer of the HTTP body object. The read function will be called when the HTTP body is
+    ///   requested to read data.
+    auto (*m_read)(void *, void *, std::uint32_t) -> task<std::expected<std::uint32_t, std::error_code>>;
+
+    /// \brief
+    ///   Destructor function pointer of the HTTP body object.
+    auto (*m_destroy)(void *) noexcept -> void;
+};
+
 /// \class http_server
 /// \brief
 ///   HTTP server application.
